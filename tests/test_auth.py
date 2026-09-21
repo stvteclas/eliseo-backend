@@ -1,4 +1,5 @@
 import os
+import uuid
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_eliseo.db")
 
@@ -10,7 +11,8 @@ client = TestClient(app)
 
 
 def test_register_login_and_me():
-    email = "test-t02@eliseo.dev"
+    # Email único por corrida: la base de test persiste entre ejecuciones.
+    email = f"test-t02-{uuid.uuid4().hex[:8]}@eliseo.dev"
     password = "una-clave-segura-123"
 
     # Registro

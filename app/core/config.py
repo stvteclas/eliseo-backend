@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     # LLM (motor de orquestación)
     anthropic_api_key: str = ""
 
+    # Servidor MCP (herramientas del agente). Transporte HTTP: en local el
+    # servidor de prueba corre aparte (python mcp_servers/sandbox_server.py);
+    # en producción apunta al servicio MCP desplegado.
+    mcp_sandbox_url: str = "http://127.0.0.1:8001/mcp"
+
     # Voz
     deepgram_api_key: str = ""
 

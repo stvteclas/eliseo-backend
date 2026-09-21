@@ -26,9 +26,20 @@ colgarse.
 
 ## Probar en local
 
+El servidor MCP corre como servicio HTTP aparte (puerto 8001), así que hay
+que levantar **dos procesos**, cada uno en su terminal:
+
 ```bash
+# Terminal 1 — servidor MCP (herramientas)
+python mcp_servers/sandbox_server.py
+
+# Terminal 2 — backend
 uvicorn app.main:app --reload
 ```
+
+La URL del MCP se configura con `MCP_SANDBOX_URL` (por defecto
+`http://127.0.0.1:8001/mcp`). Si el servidor MCP está caído, `/chat`
+responde 503 con un mensaje claro.
 
 Primero necesitás un token (usá un usuario que ya hayas registrado con
 T02, o registrá uno nuevo):
@@ -55,16 +66,14 @@ algo en la conexión con el MCP no está andando — revisá que
 `sandbox_server.py` (usa una ruta relativa al propio archivo, así que
 debería resolver sola, pero vale la pena confirmarlo si falla).
 
-## Importante: esto NO se despliega a Vercel todavía tal cual está
+## Transporte HTTP (ya migrado)
 
-El servidor MCP de prueba usa transporte stdio (arranca un proceso
-aparte) — funciona perfecto en tu máquina, pero no es el modelo
-pensado para una función serverless. Antes de deployar esto, hay que
-migrar `orchestrator.py` para conectar a un MCP por HTTP en vez de
-stdio (o resolver las herramientas reales de otra forma). Es un cambio
-acotado, pero hay que hacerlo antes de este HU-T03 se pueda llamar
-"resuelto en producción" — por ahora, resuelto en local es la
-definición de terminado.
+El MCP usa `streamable-http` en vez de stdio, con `stateless_http=True`
+(cada request es independiente, sin sesión en memoria). Para desplegar,
+el servidor MCP tiene que correr como su propio servicio y
+`MCP_SANDBOX_URL` tiene que apuntar a su URL pública. Eso queda para
+cuando lleguen las herramientas reales: el servidor de prueba solo
+existe para validar el mecanismo.
 
 ## Definición de terminado de T03
 
