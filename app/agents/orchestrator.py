@@ -1,21 +1,66 @@
 """
-Punto de entrada del motor de orquestación de Eliseo.
+Motor de orquestación de Eliseo (HU-T03).
 
-Todavía no implementado — esto es el placeholder para la HU-T03
-(LangGraph + MCP integrado). Cuando llegue esa historia, acá va:
+Arma un agente de LangGraph (ReAct) sobre Claude, con herramientas
+cargadas desde un servidor MCP. Por ahora conecta al servidor de
+prueba (mcp_servers/sandbox_server.py) vía stdio — cuando lleguen las
+herramientas reales (HU-T04: manifiesto por usuario, HU-T11: calendario,
+HU-T20: Mercado Pago), este módulo es el que las va a cargar en vez del
+servidor de juguete.
 
-  1. El grafo de LangGraph que decide qué herramienta llamar.
-  2. La carga del manifiesto de conectores MCP del usuario (HU-T04) —
-     nunca un catálogo abierto, solo lo que ese usuario autorizó.
-  3. El model routing barato/caro (HU-T06).
-
-Por ahora, esta función solo existe para que el resto del esqueleto
-(rutas, config) tenga un lugar hacia el cual crecer sin reordenar
-carpetas más adelante.
+⚠️ Nota de arquitectura para cuando esto se despliegue en Vercel:
+MCP sobre stdio arranca un proceso hijo — es el modelo pensado para una
+app corriendo en tu propia máquina, no para una función serverless. Antes
+de llevar esto a producción, hay que migrar el/los servidor(es) MCP a
+transporte HTTP (streamable-http), corriendo como su propio servicio, o
+resolver las herramientas reales sin pasar por un proceso MCP separado.
+Este cambio es de configuración de MultiServerMCPClient, no de este
+módulo ni del resto del código del agente.
 """
 
+import os
+from pathlib import Path
 
-def handle_user_request(user_id: str, message: str) -> str:
-    raise NotImplementedError(
-        "Motor de orquestación pendiente — ver HU-T03 en el documento técnico."
+from langchain_anthropic import ChatAnthropic
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.prebuilt import create_react_agent
+
+from app.core.config import settings
+
+SANDBOX_SERVER_PATH = str(Path(__file__).resolve().parent.parent.parent / "mcp_servers" / "sandbox_server.py")
+
+SYSTEM_PROMPT = (
+    "Sos Eliseo, un asistente de voz argentino, cálido y directo. "
+    "Respondé corto, como si estuvieras hablando, no escribiendo un informe."
+)
+
+
+async def _build_agent():
+    client = MultiServerMCPClient(
+        {
+            "sandbox": {
+                "command": "python",
+                "args": [SANDBOX_SERVER_PATH],
+                "transport": "stdio",
+            }
+        }
     )
+    tools = await client.get_tools()
+
+    model = ChatAnthropic(
+        model="claude-sonnet-4-6",
+        api_key=settings.anthropic_api_key,
+    )
+
+    return create_react_agent(model, tools, prompt=SYSTEM_PROMPT)
+
+
+async def handle_user_message(message: str) -> str:
+    if not settings.anthropic_api_key:
+        raise RuntimeError("Falta ANTHROPIC_API_KEY en la configuración.")
+
+    agent = await _build_agent()
+    result = await agent.ainvoke({"messages": [{"role": "user", "content": message}]})
+
+    last_message = result["messages"][-1]
+    return last_message.content

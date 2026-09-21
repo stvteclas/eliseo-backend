@@ -9,13 +9,16 @@ python-dotenv==1.0.*
 sqlalchemy==2.0.*
 psycopg2-binary==2.9.*
 passlib[bcrypt]==1.7.*
-bcrypt==4.0.1  # passlib 1.7.x no es compatible con bcrypt >= 4.1
+bcrypt==4.0.1
 pyjwt==2.9.*
 
-# Motor de orquestación (se usan a partir de la HU-T03)
+# Motor de orquestación (HU-T03)
 langgraph==0.2.*
 langchain-mcp-adapters==0.1.*
+langchain-anthropic==0.3.*
+mcp==1.*
 
 # Testing y calidad
 pytest==8.3.*
+pytest-asyncio==0.24.*
 ruff==0.7.*
