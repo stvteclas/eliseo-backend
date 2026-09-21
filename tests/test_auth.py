@@ -1,0 +1,38 @@
+import os
+
+os.environ.setdefault("DATABASE_URL", "sqlite:///./test_eliseo.db")
+
+from fastapi.testclient import TestClient
+
+from app.main import app
+
+client = TestClient(app)
+
+
+def test_register_login_and_me():
+    email = "test-t02@eliseo.dev"
+    password = "una-clave-segura-123"
+
+    # Registro
+    response = client.post("/auth/register", json={"email": email, "password": password})
+    assert response.status_code == 201
+    assert response.json()["email"] == email
+
+    # Registrar el mismo email de nuevo debe fallar
+    response = client.post("/auth/register", json={"email": email, "password": password})
+    assert response.status_code == 400
+
+    # Login
+    response = client.post("/auth/login", json={"email": email, "password": password})
+    assert response.status_code == 200
+    token = response.json()["access_token"]
+    assert token
+
+    # Ruta protegida sin token
+    response = client.get("/auth/me")
+    assert response.status_code in (401, 403)
+
+    # Ruta protegida con token
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    assert response.json()["email"] == email
