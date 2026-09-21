@@ -17,8 +17,10 @@ from langchain_anthropic import ChatAnthropic
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.prebuilt import create_react_agent
 
+import math
 from datetime import datetime, timezone
 
+import mercadopago
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from langchain_core.tools import tool
@@ -28,6 +30,7 @@ from app.core.config import settings
 from app.core.crypto import decrypt
 from app.models.connector import UserConnector
 from app.models.google_calendar_credential import GoogleCalendarCredential
+from app.models.mercadopago_credential import MercadoPagoCredential
 
 SYSTEM_PROMPT = (
     "Sos Eliseo, un asistente de voz argentino, cálido y directo. "
@@ -100,8 +103,72 @@ def build_calendar_tool(user_id: int, db: Session):
     return get_upcoming_calendar_events
 
 
+def _is_expired(expires_at: datetime | None) -> bool:
+    if expires_at is None:
+        return False
+    if expires_at.tzinfo is None:  # SQLite devuelve las fechas sin zona; se guardan en UTC
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) >= expires_at
+
+
+def build_mercadopago_tool(user_id: int, db: Session):
+    """
+    Herramienta de Mercado Pago del usuario, armada con SU access token
+    (HU-T20): los links de pago cobran a favor de su cuenta. Devuelve None
+    si el usuario no conectó Mercado Pago.
+
+    Pendiente a propósito: los access tokens de MP expiran (expires_at). Por
+    ahora, si venció, la herramienta pide reconectar; renovarlo solo con el
+    refresh_token guardado es una mejora para más adelante.
+    """
+    credential = db.query(MercadoPagoCredential).filter(MercadoPagoCredential.user_id == user_id).first()
+    if credential is None:
+        return None
+
+    access_token = decrypt(credential.access_token_encrypted)
+    expires_at = credential.expires_at
+    reconnect_message = "La conexión con Mercado Pago venció. Hay que volver a conectar la cuenta para crear links de pago."
+
+    @tool
+    def create_payment_link(title: str, amount: float, description: str) -> str:
+        """Crea un link de pago de Mercado Pago (en pesos) que cobra a favor del usuario y devuelve la URL."""
+        if _is_expired(expires_at):
+            return reconnect_message
+        if not math.isfinite(amount) or amount <= 0:
+            return "El monto del link de pago tiene que ser mayor a cero."
+
+        try:
+            result = (
+                mercadopago.SDK(access_token)
+                .preference()
+                .create(
+                    {
+                        "items": [
+                            {
+                                "title": title,
+                                "description": description,
+                                "quantity": 1,
+                                "currency_id": "ARS",
+                                "unit_price": amount,
+                            }
+                        ]
+                    }
+                )
+            )
+        except Exception:
+            return "No pude crear el link de pago en este momento."
+
+        if result.get("status") in (200, 201):
+            return result["response"]["init_point"]  # cuenta real del usuario: init_point, no sandbox_init_point
+        if result.get("status") in (401, 403):
+            return reconnect_message
+        return "No pude crear el link de pago en este momento."
+
+    return create_payment_link
+
+
 async def get_tools_for_user(user_id: int, db: Session) -> list:
-    """Herramientas de los servicios que el usuario conectó: MCP + calendario (no llama al modelo)."""
+    """Herramientas de los servicios que el usuario conectó: MCP, calendario y pagos (no llama al modelo)."""
     services = [name for (name,) in db.query(UserConnector.service_name).filter(UserConnector.user_id == user_id)]
     servers = {name: SERVICE_MCP_REGISTRY[name] for name in services if name in SERVICE_MCP_REGISTRY}
 
@@ -117,6 +184,11 @@ async def get_tools_for_user(user_id: int, db: Session) -> list:
         calendar_tool = build_calendar_tool(user_id, db)
         if calendar_tool is not None:
             tools.append(calendar_tool)
+
+    if "mercadopago" in services:
+        payment_tool = build_mercadopago_tool(user_id, db)
+        if payment_tool is not None:
+            tools.append(payment_tool)
 
     return tools
 

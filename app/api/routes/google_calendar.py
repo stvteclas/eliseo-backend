@@ -22,6 +22,7 @@ from app.api.routes.connectors import upsert_user_connector
 from app.core.config import settings
 from app.core.crypto import encrypt
 from app.core.database import get_db
+from app.core.oauth_pages import oauth_page
 from app.core.security import create_oauth_state, decode_oauth_state
 from app.models.google_calendar_credential import GoogleCalendarCredential
 from app.models.user import User
@@ -60,11 +61,6 @@ def _exchange_code_for_refresh_token(code: str) -> str | None:
     return flow.credentials.refresh_token
 
 
-def _page(message: str, status_code: int = 200) -> HTMLResponse:
-    html = f"<!doctype html><html><head><meta charset='utf-8'><title>Eliseo</title></head><body><p>{message}</p></body></html>"
-    return HTMLResponse(html, status_code=status_code)
-
-
 @router.get("/authorize")
 def authorize(current_user: User = Depends(get_current_user)) -> dict:
     if not settings.google_client_id or not settings.google_client_secret:
@@ -86,21 +82,21 @@ def callback(
     db: Session = Depends(get_db),
 ):
     if error:
-        return _page("No se autorizó el acceso al calendario. Podés cerrar esta pestaña e intentar de nuevo.", 400)
+        return oauth_page("No se autorizó el acceso al calendario. Podés cerrar esta pestaña e intentar de nuevo.", 400)
 
     user_id = decode_oauth_state(state) if state else None
     if user_id is None or not code:
-        return _page("El enlace de autorización no es válido o venció. Volvé a empezar desde la app.", 400)
+        return oauth_page("El enlace de autorización no es válido o venció. Volvé a empezar desde la app.", 400)
 
     if db.query(User).filter(User.id == user_id).first() is None:
-        return _page("El enlace de autorización no es válido.", 400)
+        return oauth_page("El enlace de autorización no es válido.", 400)
 
     try:
         refresh_token = _exchange_code_for_refresh_token(code)
     except Exception:
-        return _page("No se pudo completar la autorización con Google. Volvé a intentar.", 400)
+        return oauth_page("No se pudo completar la autorización con Google. Volvé a intentar.", 400)
     if not refresh_token:
-        return _page("Google no entregó el permiso necesario. Volvé a intentar.", 400)
+        return oauth_page("Google no entregó el permiso necesario. Volvé a intentar.", 400)
 
     credential = db.query(GoogleCalendarCredential).filter(GoogleCalendarCredential.user_id == user_id).first()
     if credential:
@@ -111,4 +107,4 @@ def callback(
 
     upsert_user_connector(db, user_id, SERVICE_NAME, scope="read_only", store_credential=True)
 
-    return _page("Listo, ya podés cerrar esta pestaña.")
+    return oauth_page("Listo, ya podés cerrar esta pestaña.")

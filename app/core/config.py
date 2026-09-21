@@ -45,8 +45,12 @@ class Settings(BaseSettings):
     whatsapp_business_token: str = ""
     whatsapp_phone_number_id: str = ""
 
-    # Mercado Pago
+    # Mercado Pago (HU-T20): app "EliseoMP" con OAuth por usuario. mp_access_token es
+    # solo el token de prueba del sandbox: el flujo real no lo usa.
     mp_access_token: str = ""
+    mp_client_id: str = ""
+    mp_client_secret: str = ""
+    mp_redirect_uri: str = "http://localhost:8000/connectors/mercadopago/callback"
 
 
 settings = Settings()

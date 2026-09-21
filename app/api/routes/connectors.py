@@ -7,10 +7,17 @@ from app.api.routes.auth import get_current_user
 from app.core.database import get_db
 from app.models.connector import UserConnector
 from app.models.google_calendar_credential import GoogleCalendarCredential
+from app.models.mercadopago_credential import MercadoPagoCredential
 from app.models.user import User
 from app.schemas.connector import ConnectorCreate, ConnectorOut
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
+
+# Servicios que guardan credenciales propias: al desconectarlos se borran también.
+CREDENTIAL_MODELS = {
+    "google_calendar": GoogleCalendarCredential,
+    "mercadopago": MercadoPagoCredential,
+}
 
 
 def upsert_user_connector(
@@ -74,8 +81,9 @@ def delete_connector(
         raise HTTPException(status_code=404, detail="Ese servicio no está conectado.")
 
     db.delete(connector)
-    if service_name == "google_calendar":
-        # Desconectar también borra el refresh token guardado, no solo el permiso.
-        db.query(GoogleCalendarCredential).filter(GoogleCalendarCredential.user_id == current_user.id).delete()
+    credential_model = CREDENTIAL_MODELS.get(service_name)
+    if credential_model is not None:
+        # Desconectar también borra los tokens guardados, no solo el permiso.
+        db.query(credential_model).filter(credential_model.user_id == current_user.id).delete()
     db.commit()
     return {"deleted": service_name}
