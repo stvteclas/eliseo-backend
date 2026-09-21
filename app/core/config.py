@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     google_client_secret: str = ""
     google_redirect_uri: str = "http://localhost:8000/connectors/google_calendar/callback"
 
+    # Solo para depurar los callbacks OAuth: muestra en la página el error que devolvió
+    # el proveedor (Mercado Pago). Dejar en false salvo mientras se investiga una falla.
+    oauth_debug: bool = False
+
     # Clave Fernet para cifrar credenciales guardadas (refresh tokens). Generar con:
     # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     encryption_key: str = ""

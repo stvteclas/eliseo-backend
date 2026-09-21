@@ -320,8 +320,7 @@ def test_code_exchange_sends_the_expected_request(monkeypatch):
     sent = {}
 
     class FakeResponse:
-        def raise_for_status(self):
-            pass
+        status_code = 200
 
         def json(self):
             return {"access_token": "APP_USR-x", "user_id": 1}
@@ -341,3 +340,107 @@ def test_code_exchange_sends_the_expected_request(monkeypatch):
         "code": "el-code",
         "redirect_uri": settings.mp_redirect_uri,
     }
+
+
+# --- diagnóstico del canje del code (por qué Mercado Pago lo rechaza)
+
+INVALID_GRANT = '{"message":"Invalid authorization code","error":"invalid_grant","status":400,"cause":[]}'
+
+
+def _mp_rejects_code(monkeypatch, status_code=400, body=INVALID_GRANT):
+    class FakeResponse:
+        text = body
+
+        def json(self):
+            raise AssertionError("un canje rechazado no se parsea como tokens")
+
+    FakeResponse.status_code = status_code
+    monkeypatch.setattr(mp_routes.httpx, "post", lambda url, **kwargs: FakeResponse())
+
+
+def test_rejected_exchange_logs_mercadopagos_full_error_body(monkeypatch, caplog):
+    _mp_rejects_code(monkeypatch)
+
+    with caplog.at_level("WARNING", logger=mp_routes.logger.name):
+        with pytest.raises(mp_routes.MercadoPagoTokenError) as exc_info:
+            mp_routes._exchange_code_for_tokens("el-code")
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.body == INVALID_GRANT
+    assert "invalid_grant" in caplog.text  # el motivo real queda en el log
+    assert "status=400" in caplog.text
+    assert "mp-client-secret-de-prueba" not in caplog.text  # nunca se loguea el secreto
+    assert "el-code" not in caplog.text
+
+
+def test_successful_exchange_does_not_log_tokens(monkeypatch, caplog):
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"access_token": "APP_USR-secreto", "user_id": 1}
+
+    monkeypatch.setattr(mp_routes.httpx, "post", lambda url, **kwargs: FakeResponse())
+
+    with caplog.at_level("DEBUG"):
+        mp_routes._exchange_code_for_tokens("el-code")
+
+    assert "APP_USR-secreto" not in caplog.text
+
+
+def test_callback_hides_mercadopago_error_from_the_page_by_default(db, monkeypatch, caplog):
+    user_id = _new_user(db)
+    _mp_rejects_code(monkeypatch)
+    monkeypatch.setattr(settings, "oauth_debug", False)
+
+    with caplog.at_level("WARNING", logger=mp_routes.logger.name):
+        response = client.get("/connectors/mercadopago/callback", params={"code": "abc", "state": create_oauth_state(user_id)})
+
+    assert response.status_code == 400
+    assert "invalid_grant" not in response.text
+    assert "invalid_grant" in caplog.text
+    assert db.query(MercadoPagoCredential).filter_by(user_id=user_id).count() == 0
+
+
+def test_callback_shows_mercadopago_error_when_oauth_debug_is_on(db, monkeypatch):
+    user_id = _new_user(db)
+    _mp_rejects_code(monkeypatch, body='{"error":"invalid_grant","message":"<script>x</script>"}')
+    monkeypatch.setattr(settings, "oauth_debug", True)
+
+    response = client.get("/connectors/mercadopago/callback", params={"code": "abc", "state": create_oauth_state(user_id)})
+
+    assert response.status_code == 400
+    assert "invalid_grant" in response.text
+    assert "Mercado Pago respondió 400" in response.text
+    assert "<script>" not in response.text  # el texto de Mercado Pago va escapado
+    assert db.query(MercadoPagoCredential).filter_by(user_id=user_id).count() == 0
+
+
+def test_callback_logs_why_the_state_was_rejected(db, caplog):
+    with caplog.at_level("WARNING", logger=mp_routes.logger.name):
+        client.get("/connectors/mercadopago/callback", params={"code": "abc", "state": "falsificado"})
+        client.get("/connectors/mercadopago/callback", params={"error": "access_denied"})
+
+    assert "state inválido o vencido" in caplog.text
+    assert "access_denied" in caplog.text
+
+
+def test_redirect_uri_is_identical_in_authorize_and_code_exchange(db, monkeypatch):
+    # Un espacio o salto de línea pegado en la variable de entorno no debe llegar a Mercado Pago.
+    monkeypatch.setattr(settings, "mp_redirect_uri", "https://eliseo.example.com/connectors/mercadopago/callback \n")
+    sent = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"access_token": "APP_USR-x", "user_id": 1}
+
+    monkeypatch.setattr(mp_routes.httpx, "post", lambda url, **kwargs: sent.update(kwargs) or FakeResponse())
+
+    authorize = client.get("/connectors/mercadopago/authorize", headers=_auth_header(_new_user(db)))
+    authorize_redirect_uri = parse_qs(urlparse(authorize.json()["authorize_url"]).query)["redirect_uri"][0]
+    mp_routes._exchange_code_for_tokens("el-code")
+
+    assert authorize_redirect_uri == sent["json"]["redirect_uri"]
+    assert authorize_redirect_uri == "https://eliseo.example.com/connectors/mercadopago/callback"
