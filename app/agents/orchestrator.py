@@ -17,10 +17,17 @@ from langchain_anthropic import ChatAnthropic
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.prebuilt import create_react_agent
 
+from datetime import datetime, timezone
+
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from langchain_core.tools import tool
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.crypto import decrypt
 from app.models.connector import UserConnector
+from app.models.google_calendar_credential import GoogleCalendarCredential
 
 SYSTEM_PROMPT = (
     "Sos Eliseo, un asistente de voz argentino, cálido y directo. "
@@ -43,18 +50,75 @@ class ToolServerUnavailable(Exception):
     """El servidor MCP no responde (caído o URL mal configurada)."""
 
 
-async def get_tools_for_user(user_id: int, db: Session) -> list:
-    """Herramientas MCP de los servicios que el usuario conectó (no llama al modelo)."""
-    rows = db.query(UserConnector.service_name).filter(UserConnector.user_id == user_id).all()
-    servers = {name: SERVICE_MCP_REGISTRY[name] for (name,) in rows if name in SERVICE_MCP_REGISTRY}
-    if not servers:
-        return []
+def build_calendar_tool(user_id: int, db: Session):
+    """
+    Herramienta de Google Calendar del usuario, armada con SUS credenciales
+    (HU-T11). No es un servidor MCP: cada usuario tiene su propio refresh
+    token, así que la herramienta se construye por usuario. Devuelve None si
+    el usuario no conectó su calendario.
+    """
+    credential = db.query(GoogleCalendarCredential).filter(GoogleCalendarCredential.user_id == user_id).first()
+    if credential is None:
+        return None
 
-    client = MultiServerMCPClient(servers)
-    try:
-        return await client.get_tools()
-    except Exception as exc:  # los errores de conexión llegan como ExceptionGroup
-        raise ToolServerUnavailable(", ".join(servers)) from exc
+    google_credentials = Credentials(
+        token=None,
+        refresh_token=decrypt(credential.refresh_token_encrypted),
+        client_id=settings.google_client_id,
+        client_secret=settings.google_client_secret,
+        token_uri="https://oauth2.googleapis.com/token",
+        scopes=["https://www.googleapis.com/auth/calendar.readonly"],
+    )
+
+    @tool
+    def get_upcoming_calendar_events() -> str:
+        """Devuelve los próximos eventos del calendario de Google del usuario."""
+        try:
+            service = build("calendar", "v3", credentials=google_credentials, cache_discovery=False)
+            result = (
+                service.events()
+                .list(
+                    calendarId="primary",
+                    timeMin=datetime.now(timezone.utc).isoformat(),
+                    maxResults=10,
+                    singleEvents=True,
+                    orderBy="startTime",
+                )
+                .execute()
+            )
+        except Exception:
+            return "No pude leer el calendario. Puede que la autorización haya vencido y haya que volver a conectarlo."
+
+        events = result.get("items", [])
+        if not events:
+            return "No hay eventos próximos en el calendario."
+        return "\n".join(
+            f"{event['start'].get('dateTime', event['start'].get('date'))} — {event.get('summary', '(sin título)')}"
+            for event in events
+        )
+
+    return get_upcoming_calendar_events
+
+
+async def get_tools_for_user(user_id: int, db: Session) -> list:
+    """Herramientas de los servicios que el usuario conectó: MCP + calendario (no llama al modelo)."""
+    services = [name for (name,) in db.query(UserConnector.service_name).filter(UserConnector.user_id == user_id)]
+    servers = {name: SERVICE_MCP_REGISTRY[name] for name in services if name in SERVICE_MCP_REGISTRY}
+
+    tools = []
+    if servers:
+        client = MultiServerMCPClient(servers)
+        try:
+            tools = await client.get_tools()
+        except Exception as exc:  # los errores de conexión llegan como ExceptionGroup
+            raise ToolServerUnavailable(", ".join(servers)) from exc
+
+    if "google_calendar" in services:
+        calendar_tool = build_calendar_tool(user_id, db)
+        if calendar_tool is not None:
+            tools.append(calendar_tool)
+
+    return tools
 
 
 async def _build_agent(user_id: int, db: Session):

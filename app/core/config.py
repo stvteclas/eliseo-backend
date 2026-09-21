@@ -31,9 +31,15 @@ class Settings(BaseSettings):
     # Voz
     deepgram_api_key: str = ""
 
-    # Calendario
+    # Calendario (HU-T11): credencial OAuth tipo "Web application" de Google Cloud.
+    # En producción google_redirect_uri es la URL de Vercel + el mismo path.
     google_client_id: str = ""
     google_client_secret: str = ""
+    google_redirect_uri: str = "http://localhost:8000/connectors/google_calendar/callback"
+
+    # Clave Fernet para cifrar credenciales guardadas (refresh tokens). Generar con:
+    # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    encryption_key: str = ""
 
     # WhatsApp Business
     whatsapp_business_token: str = ""

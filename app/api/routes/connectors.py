@@ -6,10 +6,37 @@ from sqlalchemy.orm import Session
 from app.api.routes.auth import get_current_user
 from app.core.database import get_db
 from app.models.connector import UserConnector
+from app.models.google_calendar_credential import GoogleCalendarCredential
 from app.models.user import User
 from app.schemas.connector import ConnectorCreate, ConnectorOut
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
+
+
+def upsert_user_connector(
+    db: Session, user_id: int, service_name: str, scope: str, store_credential: bool
+) -> tuple[UserConnector, bool]:
+    """Crea el conector del usuario para ese servicio, o lo actualiza. Devuelve (conector, creado)."""
+    connector = (
+        db.query(UserConnector)
+        .filter(UserConnector.user_id == user_id, UserConnector.service_name == service_name)
+        .first()
+    )
+    created = connector is None
+
+    if created:
+        connector = UserConnector(
+            user_id=user_id, service_name=service_name, scope=scope, store_credential=store_credential
+        )
+        db.add(connector)
+    else:
+        connector.scope = scope
+        connector.store_credential = store_credential
+        connector.connected_at = datetime.now(timezone.utc)
+
+    db.commit()
+    db.refresh(connector)
+    return connector, created
 
 
 @router.post("", response_model=ConnectorOut, status_code=status.HTTP_201_CREATED)
@@ -19,29 +46,11 @@ def upsert_connector(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Crea el conector del usuario para ese servicio, o lo actualiza si ya existe."""
-    connector = (
-        db.query(UserConnector)
-        .filter(UserConnector.user_id == current_user.id, UserConnector.service_name == data.service_name)
-        .first()
+    connector, created = upsert_user_connector(
+        db, current_user.id, data.service_name, data.scope, data.store_credential
     )
-
-    if connector:
-        connector.scope = data.scope
-        connector.store_credential = data.store_credential
-        connector.connected_at = datetime.now(timezone.utc)
+    if not created:
         response.status_code = status.HTTP_200_OK
-    else:
-        connector = UserConnector(
-            user_id=current_user.id,
-            service_name=data.service_name,
-            scope=data.scope,
-            store_credential=data.store_credential,
-        )
-        db.add(connector)
-
-    db.commit()
-    db.refresh(connector)
     return connector
 
 
@@ -65,5 +74,8 @@ def delete_connector(
         raise HTTPException(status_code=404, detail="Ese servicio no está conectado.")
 
     db.delete(connector)
+    if service_name == "google_calendar":
+        # Desconectar también borra el refresh token guardado, no solo el permiso.
+        db.query(GoogleCalendarCredential).filter(GoogleCalendarCredential.user_id == current_user.id).delete()
     db.commit()
     return {"deleted": service_name}
