@@ -16,6 +16,7 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from app.agents import orchestrator
+from app.agents.builtin_tools import BUILTIN_TOOL_NAMES
 from app.agents.orchestrator import build_mercadopago_tool, get_tools_for_user
 from app.api.routes import mercadopago as mp_routes
 from app.core.config import settings
@@ -118,11 +119,9 @@ async def test_get_tools_for_user_includes_payment_tool(db):
     user_id = _new_user(db)
     _add_credential(db, user_id)
 
-    assert [t.name for t in await get_tools_for_user(user_id, db)] == [
-        "get_current_datetime",
-        "get_weather",
-        "create_payment_link",
-    ]
+    names = [t.name for t in await get_tools_for_user(user_id, db)]
+    assert set(BUILTIN_TOOL_NAMES).issubset(names)
+    assert names[-1] == "create_payment_link"
 
 
 @pytest.mark.asyncio
@@ -131,10 +130,7 @@ async def test_payment_connector_without_credential_gives_no_tool(db):
     db.add(UserConnector(user_id=user_id, service_name="mercadopago", scope="read_write"))
     db.commit()
 
-    assert sorted(t.name for t in await get_tools_for_user(user_id, db)) == [
-        "get_current_datetime",
-        "get_weather",
-    ]
+    assert sorted(t.name for t in await get_tools_for_user(user_id, db)) == sorted(BUILTIN_TOOL_NAMES)
 
 def test_disconnecting_deletes_the_stored_tokens(db):
     user_id = _new_user(db)

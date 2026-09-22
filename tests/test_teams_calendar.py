@@ -17,6 +17,7 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from app.agents import orchestrator
+from app.agents.builtin_tools import BUILTIN_TOOL_NAMES
 from app.agents.orchestrator import build_teams_calendar_tool, get_tools_for_user
 from app.api.routes import teams_calendar as teams_routes
 from app.core.config import settings
@@ -124,13 +125,14 @@ async def test_get_tools_for_user_returns_one_tool_per_teams_account(db):
     _add_credential(db, user_id, "agencia")
 
     tools = await get_tools_for_user(user_id, db)
+    names = set(t.name for t in tools)
 
-    assert sorted(t.name for t in tools) == [
-        "get_current_datetime",
+    assert set(BUILTIN_TOOL_NAMES).issubset(names)
+    assert {
         "get_teams_calendar_events_agencia",
         "get_teams_calendar_events_banco",
-        "get_weather",
-    ]
+    }.issubset(names)
+    assert len(names) == len(BUILTIN_TOOL_NAMES) + 2
 
 
 # 4. Token vencido -> la tool devuelve un mensaje pidiendo reconectar esa cuenta, no rompe el agente

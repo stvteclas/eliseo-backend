@@ -180,19 +180,10 @@ def test_builtin_datetime_tool_returns_argentina_time():
 
 def test_builtin_weather_tool_uses_gps_when_city_empty(monkeypatch):
     monkeypatch.setattr(
-        weather_service,
-        "get_weather_report",
-        lambda city=None, latitude=None, longitude=None: f"ok:{city}:{latitude}:{longitude}",
-    )
-    # Re-import binding used inside closure — monkeypatch the module the orchestrator imports
-    import app.agents.orchestrator as orch
-
-    monkeypatch.setattr(
-        orch,
-        "get_weather_report",
+        "app.agents.builtin_tools.get_weather_report",
         lambda city=None, latitude=None, longitude=None: f"ok:{city}:{latitude}:{longitude}",
     )
 
-    tools = {t.name: t for t in orch.build_builtin_tools(latitude=-34.6, longitude=-58.4)}
+    tools = {t.name: t for t in build_builtin_tools(latitude=-34.6, longitude=-58.4)}
     result = tools["get_weather"].invoke({"city": ""})
     assert result == "ok:None:-34.6:-58.4"

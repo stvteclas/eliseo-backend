@@ -15,6 +15,7 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from app.agents.orchestrator import build_calendar_tool, build_calendar_tools, get_tools_for_user
+from app.agents.builtin_tools import BUILTIN_TOOL_NAMES
 from app.api.routes import google_calendar
 from app.core.config import settings
 from app.core.crypto import decrypt, encrypt
@@ -290,10 +291,10 @@ async def test_get_tools_for_user_includes_calendar_tool(db):
     _add_credential(db, user_id)
 
     tools = await get_tools_for_user(user_id, db)
+    names = [t.name for t in tools]
 
-    assert [t.name for t in tools] == [
-        "get_current_datetime",
-        "get_weather",
+    assert set(BUILTIN_TOOL_NAMES).issubset(names)
+    assert names[-2:] == [
         "get_upcoming_calendar_events",
         "create_calendar_reminder",
     ]
@@ -305,10 +306,7 @@ async def test_calendar_connector_without_credential_gives_no_tool(db):
     db.add(UserConnector(user_id=user_id, service_name="google_calendar", scope="read_only"))
     db.commit()
 
-    assert sorted(t.name for t in await get_tools_for_user(user_id, db)) == [
-        "get_current_datetime",
-        "get_weather",
-    ]
+    assert sorted(t.name for t in await get_tools_for_user(user_id, db)) == sorted(BUILTIN_TOOL_NAMES)
 
 
 @pytest.mark.asyncio
@@ -318,10 +316,7 @@ async def test_credential_without_connector_gives_no_tool(db):
     db.add(GoogleCalendarCredential(user_id=user_id, refresh_token_encrypted=encrypt("x")))
     db.commit()
 
-    assert sorted(t.name for t in await get_tools_for_user(user_id, db)) == [
-        "get_current_datetime",
-        "get_weather",
-    ]
+    assert sorted(t.name for t in await get_tools_for_user(user_id, db)) == sorted(BUILTIN_TOOL_NAMES)
 
 # --- state firmado
 

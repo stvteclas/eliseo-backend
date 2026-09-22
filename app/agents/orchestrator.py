@@ -36,7 +36,8 @@ from app.models.google_calendar_credential import GoogleCalendarCredential
 from app.models.mercadopago_credential import MercadoPagoCredential
 from app.models.teams_calendar_credential import TeamsCalendarCredential
 from app.models.user import User
-from app.services.weather import get_weather_report
+from app.agents.builtin_tools import build_builtin_tools  # noqa: F401 — reexport / uso en get_tools
+from app.agents.client_actions import drain_client_actions, reset_client_actions
 
 
 SYSTEM_PROMPT_TEMPLATE = (
@@ -44,8 +45,11 @@ SYSTEM_PROMPT_TEMPLATE = (
     "Respondé corto, como si estuvieras hablando, no escribiendo un informe. "
     "Nunca uses emojis, emoticones ni sus nombres (nada de blush, smile, etc.): "
     "solo texto hablable. "
-    "Las herramientas son solo para datos externos (clima, hora, calendario, pagos). "
-    "Para charlar, explicar, inventar o contar un cuento, respondé vos mismo sin herramientas. "
+    "Las herramientas son para datos o acciones externas "
+    "(clima, hora, calendario, pagos, notas, cálculos, viaje, noticias, "
+    "traducción, temporizador, avisos locales, llamar contactos, resumen del día). "
+    "Para charlar, explicar, inventar, contar un cuento, chistes, trivia o "
+    "adivinanzas, respondé vos mismo sin herramientas. "
     "Si te piden un dato externo y no tenés la herramienta, decilo en vez de inventar el dato."
 )
 
@@ -415,68 +419,6 @@ ACCOUNT_TOOL_BUILDERS = {
 }
 
 
-def build_builtin_tools(latitude: float | None = None, longitude: float | None = None) -> list:
-    """
-    Herramientas siempre disponibles (hora y clima), sin conector.
-    Si el request trae GPS, get_weather puede usarlo cuando no pasan ciudad.
-    """
-
-    def get_current_datetime() -> str:
-        # Hora de Argentina (UTC-3 fijo; suficiente para respuestas habladas).
-        now = datetime.now(timezone(timedelta(hours=-3)))
-        weekdays = (
-            "lunes",
-            "martes",
-            "miércoles",
-            "jueves",
-            "viernes",
-            "sábado",
-            "domingo",
-        )
-        months = (
-            "enero",
-            "febrero",
-            "marzo",
-            "abril",
-            "mayo",
-            "junio",
-            "julio",
-            "agosto",
-            "septiembre",
-            "octubre",
-            "noviembre",
-            "diciembre",
-        )
-        return (
-            f"{weekdays[now.weekday()]} {now.day} de {months[now.month - 1]} "
-            f"de {now.year}, {now.hour:02d}:{now.minute:02d} (hora de Argentina)"
-        )
-
-    def get_weather(city: str = "") -> str:
-        """
-        Clima actual. Pasá una ciudad (ej. 'Buenos Aires') o dejá vacío para
-        usar la ubicación GPS del usuario si la app la mandó.
-        """
-        city_arg = city.strip() or None
-        return get_weather_report(city=city_arg, latitude=latitude, longitude=longitude)
-
-    return [
-        StructuredTool.from_function(
-            func=get_current_datetime,
-            name="get_current_datetime",
-            description="Devuelve la fecha y hora actual en Argentina.",
-        ),
-        StructuredTool.from_function(
-            func=get_weather,
-            name="get_weather",
-            description=(
-                "Devuelve el clima actual. Pasá city con el nombre de una ciudad, "
-                "o dejá city vacío para usar la ubicación GPS del usuario si está disponible."
-            ),
-        ),
-    ]
-
-
 async def get_tools_for_user(
     user_id: int,
     db: Session,
@@ -491,7 +433,12 @@ async def get_tools_for_user(
     service_names = {c.service_name for c in connectors}
     servers = {name: SERVICE_MCP_REGISTRY[name] for name in service_names if name in SERVICE_MCP_REGISTRY}
 
-    tools = build_builtin_tools(latitude=latitude, longitude=longitude)
+    tools = build_builtin_tools(
+        user_id=user_id,
+        db=db,
+        latitude=latitude,
+        longitude=longitude,
+    )
     if servers:
         client = MultiServerMCPClient(servers)
         try:
@@ -537,18 +484,22 @@ async def handle_user_message(
     db: Session,
     latitude: float | None = None,
     longitude: float | None = None,
-) -> str:
-    """Responde un mensaje usando herramientas built-in y las que el usuario conectó."""
+) -> tuple[str, list]:
+    """
+    Responde un mensaje usando herramientas built-in y las que el usuario conectó.
+    Devuelve (texto_hablado, acciones_para_la_app).
+    """
     if not settings.anthropic_api_key:
         raise RuntimeError("Falta ANTHROPIC_API_KEY en la configuración.")
 
     user = db.query(User).filter(User.id == user_id).first()
     persona = user.persona if user is not None else "elisse"
 
+    reset_client_actions()
     agent = await _build_agent(
         user_id, db, persona=persona, latitude=latitude, longitude=longitude
     )
     result = await agent.ainvoke({"messages": [{"role": "user", "content": message}]})
 
     last_message = result["messages"][-1]
-    return last_message.content
+    return last_message.content, drain_client_actions()

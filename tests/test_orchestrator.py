@@ -18,6 +18,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///./test_eliseo.db")
 from fastapi.testclient import TestClient
 
 from app.agents import orchestrator
+from app.agents.builtin_tools import BUILTIN_TOOL_NAMES
 from app.agents.orchestrator import SERVICE_MCP_REGISTRY, get_tools_for_user
 from app.core.database import SessionLocal
 from app.main import app
@@ -44,6 +45,9 @@ def _new_user(db, *services) -> int:
     db.commit()
     return user.id
 
+
+def _assert_only_builtins(names):
+    assert sorted(names) == sorted(BUILTIN_TOOL_NAMES)
 
 @pytest.fixture(scope="module")
 def sandbox_mcp():
@@ -86,7 +90,7 @@ async def test_user_without_connectors_gets_builtin_tools_only(db, monkeypatch):
     monkeypatch.setattr(orchestrator, "MultiServerMCPClient", FailIfUsed)
 
     names = sorted(t.name for t in await get_tools_for_user(_new_user(db), db))
-    assert names == ["get_current_datetime", "get_weather"]
+    _assert_only_builtins(names)
 
 
 @pytest.mark.asyncio
@@ -105,7 +109,7 @@ async def test_connector_not_in_registry_is_ignored(db, monkeypatch):
     monkeypatch.setattr(orchestrator, "MultiServerMCPClient", FailIfUsed)
 
     names = sorted(t.name for t in await get_tools_for_user(_new_user(db, "algo_que_no_existe_en_el_registry", "whatsapp"), db))
-    assert names == ["get_current_datetime", "get_weather"]
+    _assert_only_builtins(names)
 
 
 @pytest.mark.asyncio
@@ -116,13 +120,12 @@ async def test_tools_are_per_user_and_revocable(db, sandbox_mcp):
     with_names = {t.name for t in await get_tools_for_user(with_sandbox, db)}
     without_names = {t.name for t in await get_tools_for_user(without, db)}
     assert "get_current_datetime" in with_names
-    assert without_names == {"get_current_datetime", "get_weather"}
+    assert without_names == set(BUILTIN_TOOL_NAMES)
 
     db.query(UserConnector).filter(UserConnector.user_id == with_sandbox).delete()
     db.commit()
     revoked = {t.name for t in await get_tools_for_user(with_sandbox, db)}
-    assert revoked == {"get_current_datetime", "get_weather"}
-
+    assert revoked == set(BUILTIN_TOOL_NAMES)
 
 def test_chat_passes_authenticated_user_to_orchestrator(monkeypatch):
     received = {}
@@ -131,7 +134,7 @@ def test_chat_passes_authenticated_user_to_orchestrator(monkeypatch):
         received.update(
             message=message, user_id=user_id, db=db, latitude=latitude, longitude=longitude
         )
-        return "ok"
+        return "ok", []
 
     monkeypatch.setattr("app.api.routes.chat.handle_user_message", fake_handle_user_message)
 

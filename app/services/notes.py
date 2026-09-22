@@ -1,0 +1,73 @@
+"""CRUD simple de notas / lista de compras."""
+
+from __future__ import annotations
+
+from sqlalchemy.orm import Session
+
+from app.models.note import Note
+
+DEFAULT_LIST = "compras"
+MAX_ITEMS = 50
+
+
+def _normalize_list(list_name: str | None) -> str:
+    name = (list_name or DEFAULT_LIST).strip().lower() or DEFAULT_LIST
+    return name[:40]
+
+
+def add_note(db: Session, user_id: int, text: str, list_name: str | None = None) -> str:
+    body = (text or "").strip()
+    if not body:
+        return "Decime qué querés anotar."
+    name = _normalize_list(list_name)
+    count = db.query(Note).filter(Note.user_id == user_id, Note.list_name == name).count()
+    if count >= MAX_ITEMS:
+        return f"La lista '{name}' ya tiene {MAX_ITEMS} ítems. Borrá alguno antes."
+    note = Note(user_id=user_id, list_name=name, text=body[:500])
+    db.add(note)
+    db.commit()
+    return f"Listo, agregué '{body}' a {name}."
+
+
+def list_notes(db: Session, user_id: int, list_name: str | None = None) -> str:
+    name = _normalize_list(list_name)
+    rows = (
+        db.query(Note)
+        .filter(Note.user_id == user_id, Note.list_name == name)
+        .order_by(Note.id.asc())
+        .limit(MAX_ITEMS)
+        .all()
+    )
+    if not rows:
+        return f"La lista '{name}' está vacía."
+    lines = [f"{i}. {row.text}" for i, row in enumerate(rows, start=1)]
+    return f"En {name}: " + "; ".join(lines)
+
+
+def clear_notes(db: Session, user_id: int, list_name: str | None = None) -> str:
+    name = _normalize_list(list_name)
+    deleted = db.query(Note).filter(Note.user_id == user_id, Note.list_name == name).delete()
+    db.commit()
+    if deleted == 0:
+        return f"La lista '{name}' ya estaba vacía."
+    return f"Borré {deleted} ítems de {name}."
+
+
+def remove_note(db: Session, user_id: int, text: str, list_name: str | None = None) -> str:
+    """Borra el primer ítem cuyo texto contenga `text` (case-insensitive)."""
+    needle = (text or "").strip().lower()
+    if not needle:
+        return "Decime qué ítem querés sacar."
+    name = _normalize_list(list_name)
+    rows = (
+        db.query(Note)
+        .filter(Note.user_id == user_id, Note.list_name == name)
+        .order_by(Note.id.asc())
+        .all()
+    )
+    for row in rows:
+        if needle in row.text.lower():
+            db.delete(row)
+            db.commit()
+            return f"Saqué '{row.text}' de {name}."
+    return f"No encontré '{text}' en {name}."

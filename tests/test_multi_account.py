@@ -15,6 +15,7 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from app.agents.orchestrator import build_calendar_tool, get_tools_for_user
+from app.agents.builtin_tools import BUILTIN_TOOL_NAMES
 from app.core.config import settings
 from app.core.crypto import encrypt
 from app.core.database import SessionLocal
@@ -128,16 +129,16 @@ async def test_get_tools_for_user_returns_one_tool_per_account(db):
     _add_calendar_account(db, user_id, "banco")
 
     tools = await get_tools_for_user(user_id, db)
+    names = set(t.name for t in tools)
 
-    assert sorted(t.name for t in tools) == [
+    assert set(BUILTIN_TOOL_NAMES).issubset(names)
+    assert {
         "create_calendar_reminder_banco",
         "create_calendar_reminder_personal",
-        "get_current_datetime",
         "get_upcoming_calendar_events_banco",
         "get_upcoming_calendar_events_personal",
-        "get_weather",
-    ]
-    assert len({t.name for t in tools}) == 6  # nombres únicos: el agente puede elegir cuál usar
+    }.issubset(names)
+    assert len(names) == len(BUILTIN_TOOL_NAMES) + 4
 
 
 def test_calendar_tool_default_label_keeps_the_original_name(db):
