@@ -82,13 +82,29 @@ def _account_suffix(account_label: str) -> str:
     return f"_{slug}" if slug else ""
 
 
-def build_calendar_tool(user_id: int, db: Session, account_label: str = "default"):
+GOOGLE_CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+ARGENTINA_TZ = timezone(timedelta(hours=-3))
+
+
+def _parse_event_start(when: str) -> datetime | None:
+    """Acepta ISO (con o sin zona). Sin zona se asume hora de Argentina."""
+    text = (when or "").strip()
+    if not text:
+        return None
+    try:
+        normalized = text.replace("Z", "+00:00")
+        start = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=ARGENTINA_TZ)
+    return start
+
+
+def build_calendar_tools(user_id: int, db: Session, account_label: str = "default") -> list:
     """
-    Herramienta de Google Calendar de UNA cuenta puntual del usuario, armada
-    con SUS credenciales (HU-T11; varias cuentas por usuario desde HU-T21).
-    No es un servidor MCP: cada cuenta tiene su propio refresh token, así que
-    la herramienta se construye por cuenta. Devuelve None si esa cuenta no
-    está conectada.
+    Tools de Google Calendar de UNA cuenta (leer próximos + crear recordatorio).
+    Lista vacía si esa cuenta no está conectada.
     """
     credential = (
         db.query(GoogleCalendarCredential)
@@ -96,7 +112,7 @@ def build_calendar_tool(user_id: int, db: Session, account_label: str = "default
         .first()
     )
     if credential is None:
-        return None
+        return []
 
     google_credentials = Credentials(
         token=None,
@@ -104,8 +120,10 @@ def build_calendar_tool(user_id: int, db: Session, account_label: str = "default
         client_id=settings.google_client_id,
         client_secret=settings.google_client_secret,
         token_uri="https://oauth2.googleapis.com/token",
-        scopes=["https://www.googleapis.com/auth/calendar.readonly"],
+        scopes=GOOGLE_CALENDAR_SCOPES,
     )
+    suffix = _account_suffix(account_label)
+    account_note = "" if account_label == "default" else f" de la cuenta '{account_label}'"
 
     def get_upcoming_calendar_events() -> str:
         try:
@@ -132,15 +150,80 @@ def build_calendar_tool(user_id: int, db: Session, account_label: str = "default
             for event in events
         )
 
-    description = "Devuelve los próximos eventos del calendario de Google del usuario."
-    if account_label != "default":
-        description = f"Devuelve los próximos eventos del calendario de Google de la cuenta '{account_label}'."
+    def create_calendar_reminder(title: str, when: str, duration_minutes: float = 30) -> str:
+        """
+        Crea un evento/recordatorio en Google Calendar con aviso popup 10 min antes.
+        `when` en ISO (ej. 2026-09-23T10:00:00) en hora Argentina si no trae zona.
+        """
+        start = _parse_event_start(when)
+        if start is None:
+            return "No entendí la fecha/hora. Pasá `when` en ISO, por ejemplo 2026-09-23T10:00:00."
+        if not title or not title.strip():
+            return "El recordatorio necesita un título."
+        try:
+            minutes = int(duration_minutes)
+        except (TypeError, ValueError):
+            minutes = 30
+        if minutes <= 0:
+            minutes = 30
+        end = start + timedelta(minutes=minutes)
 
-    return StructuredTool.from_function(
-        func=get_upcoming_calendar_events,
-        name=f"get_upcoming_calendar_events{_account_suffix(account_label)}",
-        description=description,
+        body = {
+            "summary": title.strip(),
+            "start": {"dateTime": start.isoformat(), "timeZone": "America/Argentina/Buenos_Aires"},
+            "end": {"dateTime": end.isoformat(), "timeZone": "America/Argentina/Buenos_Aires"},
+            "reminders": {
+                "useDefault": False,
+                "overrides": [{"method": "popup", "minutes": 10}],
+            },
+        }
+        try:
+            service = build("calendar", "v3", credentials=google_credentials, cache_discovery=False)
+            created = service.events().insert(calendarId="primary", body=body).execute()
+        except Exception:
+            return (
+                f"No pude crear el recordatorio{account_note}. "
+                "Puede que falte permiso de escritura: hay que volver a conectar Google Calendar."
+            )
+
+        link = created.get("htmlLink") or ""
+        when_label = start.astimezone(ARGENTINA_TZ).strftime("%d/%m/%Y %H:%M")
+        msg = f"Listo: recordatorio '{title.strip()}' el {when_label} (aviso 10 min antes)."
+        if link:
+            msg += f" {link}"
+        return msg
+
+    list_description = "Devuelve los próximos eventos del calendario de Google del usuario."
+    create_description = (
+        "Crea un recordatorio/evento en Google Calendar con notificación popup 10 minutos antes. "
+        "Pasá title (texto), when en ISO (ej. 2026-09-23T10:00:00, hora Argentina si no hay zona) "
+        "y opcionalmente duration_minutes (default 30)."
     )
+    if account_label != "default":
+        list_description = f"Devuelve los próximos eventos del calendario de Google de la cuenta '{account_label}'."
+        create_description = (
+            f"Crea un recordatorio en el calendario de Google de la cuenta '{account_label}' "
+            "con aviso popup 10 minutos antes. when en ISO; duration_minutes opcional."
+        )
+
+    return [
+        StructuredTool.from_function(
+            func=get_upcoming_calendar_events,
+            name=f"get_upcoming_calendar_events{suffix}",
+            description=list_description,
+        ),
+        StructuredTool.from_function(
+            func=create_calendar_reminder,
+            name=f"create_calendar_reminder{suffix}",
+            description=create_description,
+        ),
+    ]
+
+
+def build_calendar_tool(user_id: int, db: Session, account_label: str = "default"):
+    """Compat: devuelve la tool de listar, o None si no hay cuenta."""
+    tools = build_calendar_tools(user_id, db, account_label)
+    return tools[0] if tools else None
 
 
 def _is_expired(expires_at: datetime | None) -> bool:
@@ -290,7 +373,7 @@ def build_teams_calendar_tool(user_id: int, db: Session, account_label: str = "d
 # servicio: un usuario con 3 conectores "teams_calendar" (HU-T22) termina
 # con 3 tools distintas, una por cuenta.
 ACCOUNT_TOOL_BUILDERS = {
-    "google_calendar": build_calendar_tool,
+    "google_calendar": build_calendar_tools,
     "mercadopago": build_mercadopago_tool,
     "teams_calendar": build_teams_calendar_tool,
 }
@@ -385,7 +468,11 @@ async def get_tools_for_user(
         if build_tool is None:
             continue
         account_tool = build_tool(user_id, db, connector.account_label)
-        if account_tool is not None:
+        if account_tool is None:
+            continue
+        if isinstance(account_tool, list):
+            tools.extend(account_tool)
+        else:
             tools.append(account_tool)
 
     return tools

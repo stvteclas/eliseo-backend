@@ -30,7 +30,8 @@ from app.models.user import User
 router = APIRouter(prefix="/connectors/google_calendar", tags=["google_calendar"])
 
 SERVICE_NAME = "google_calendar"
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+
 
 
 def _build_flow() -> Flow:

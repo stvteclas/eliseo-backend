@@ -14,7 +14,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///./test_eliseo.db")
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from app.agents.orchestrator import build_calendar_tool, get_tools_for_user
+from app.agents.orchestrator import build_calendar_tool, build_calendar_tools, get_tools_for_user
 from app.api.routes import google_calendar
 from app.core.config import settings
 from app.core.crypto import decrypt, encrypt
@@ -94,6 +94,64 @@ def test_build_calendar_tool_with_credential_builds_tool(db):
     assert tool.name == "get_upcoming_calendar_events"
 
 
+def test_build_calendar_tools_includes_reminder_with_10min_popup(db, monkeypatch):
+    user_id = _new_user(db)
+    _add_credential(db, user_id)
+    captured = {}
+
+    class FakeEvents:
+        def insert(self, calendarId, body):
+            captured["calendarId"] = calendarId
+            captured["body"] = body
+
+            class Exec:
+                def execute(self_inner):
+                    return {"htmlLink": "https://calendar.google.com/event?eid=abc"}
+
+            return Exec()
+
+    class FakeService:
+        def events(self):
+            return FakeEvents()
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator.build",
+        lambda *args, **kwargs: FakeService(),
+    )
+
+    tools = {t.name: t for t in build_calendar_tools(user_id, db)}
+    assert "create_calendar_reminder" in tools
+
+    result = tools["create_calendar_reminder"].invoke(
+        {"title": "Dentista", "when": "2026-09-23T10:00:00", "duration_minutes": 30}
+    )
+
+    assert "Listo" in result
+    assert captured["calendarId"] == "primary"
+    assert captured["body"]["summary"] == "Dentista"
+    assert captured["body"]["reminders"] == {
+        "useDefault": False,
+        "overrides": [{"method": "popup", "minutes": 10}],
+    }
+    assert "2026-09-23T10:00:00" in captured["body"]["start"]["dateTime"]
+
+
+def test_oauth_authorize_requests_events_scope():
+    email = f"test-scope-{uuid.uuid4().hex[:8]}@eliseo.dev"
+    client.post("/auth/register", json={"email": email, "password": "una-clave-segura-123"})
+    token = client.post("/auth/login", json={"email": email, "password": "una-clave-segura-123"}).json()[
+        "access_token"
+    ]
+    response = client.get(
+        "/connectors/google_calendar/authorize",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    url = response.json()["authorize_url"]
+    assert "calendar.events" in url
+    assert "calendar.readonly" not in url
+
+
 @pytest.mark.asyncio
 async def test_get_tools_for_user_includes_calendar_tool(db):
     user_id = _new_user(db)
@@ -105,6 +163,7 @@ async def test_get_tools_for_user_includes_calendar_tool(db):
         "get_current_datetime",
         "get_weather",
         "get_upcoming_calendar_events",
+        "create_calendar_reminder",
     ]
 
 
@@ -169,7 +228,7 @@ def test_authorize_returns_google_url_with_signed_state(db):
     assert query["client_id"] == ["client-id-de-prueba"]
     assert query["access_type"] == ["offline"]
     assert query["prompt"] == ["consent"]
-    assert query["scope"] == ["https://www.googleapis.com/auth/calendar.readonly"]
+    assert query["scope"] == ["https://www.googleapis.com/auth/calendar.events"]
     assert query["redirect_uri"] == [settings.google_redirect_uri]
     assert "code_challenge" not in query  # sin PKCE: el callback no tendría el verifier
     assert decode_oauth_state(query["state"][0]) == (user_id, "default")

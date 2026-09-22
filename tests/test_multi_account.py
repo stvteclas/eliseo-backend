@@ -130,12 +130,14 @@ async def test_get_tools_for_user_returns_one_tool_per_account(db):
     tools = await get_tools_for_user(user_id, db)
 
     assert sorted(t.name for t in tools) == [
+        "create_calendar_reminder_banco",
+        "create_calendar_reminder_personal",
         "get_current_datetime",
         "get_upcoming_calendar_events_banco",
         "get_upcoming_calendar_events_personal",
         "get_weather",
     ]
-    assert len({t.name for t in tools}) == 4  # nombres únicos: el agente puede elegir cuál usar
+    assert len({t.name for t in tools}) == 6  # nombres únicos: el agente puede elegir cuál usar
 
 
 def test_calendar_tool_default_label_keeps_the_original_name(db):
