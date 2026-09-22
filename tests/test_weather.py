@@ -5,7 +5,6 @@ Tests de clima (Open-Meteo) y tools built-in de hora/clima.
 import os
 
 import httpx
-import pytest
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_eliseo.db")
 

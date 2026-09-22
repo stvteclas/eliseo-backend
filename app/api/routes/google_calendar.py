@@ -12,6 +12,8 @@ Guarda solo el refresh token, cifrado. Requiere una credencial OAuth tipo
 registrada como URI de redirección autorizada.
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from google_auth_oauthlib.flow import Flow
@@ -22,10 +24,12 @@ from app.api.routes.connectors import upsert_user_connector
 from app.core.config import settings
 from app.core.crypto import encrypt
 from app.core.database import get_db
-from app.core.oauth_pages import oauth_page
+from app.core.oauth_pages import oauth_failure_page, oauth_page
 from app.core.security import create_oauth_state, decode_oauth_state
 from app.models.google_calendar_credential import GoogleCalendarCredential
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/connectors/google_calendar", tags=["google_calendar"])
 
@@ -101,23 +105,36 @@ def callback(
     if not refresh_token:
         return oauth_page("Google no entregó el permiso necesario. Volvé a intentar.", 400)
 
-    credential = (
-        db.query(GoogleCalendarCredential)
-        .filter(GoogleCalendarCredential.user_id == user_id, GoogleCalendarCredential.account_label == account_label)
-        .first()
-    )
-    if credential:
-        credential.refresh_token_encrypted = encrypt(refresh_token)
-    else:
-        db.add(
-            GoogleCalendarCredential(
-                user_id=user_id, account_label=account_label, refresh_token_encrypted=encrypt(refresh_token)
-            )
+    try:
+        credential = (
+            db.query(GoogleCalendarCredential)
+            .filter(GoogleCalendarCredential.user_id == user_id, GoogleCalendarCredential.account_label == account_label)
+            .first()
         )
-    db.commit()
+        if credential:
+            credential.refresh_token_encrypted = encrypt(refresh_token)
+        else:
+            db.add(
+                GoogleCalendarCredential(
+                    user_id=user_id, account_label=account_label, refresh_token_encrypted=encrypt(refresh_token)
+                )
+            )
+        db.commit()
 
-    upsert_user_connector(
-        db, user_id, SERVICE_NAME, scope="read_only", store_credential=True, account_label=account_label
-    )
+        upsert_user_connector(
+            db, user_id, SERVICE_NAME, scope="read_only", store_credential=True, account_label=account_label
+        )
+    except Exception as exc:
+        db.rollback()
+        # Google ya autorizó en este punto (el code se canjeó bien) — si esto falla,
+        # el usuario cree que quedó conectado, así que hay que loguear fuerte.
+        logger.exception(
+            "Se autorizó con Google pero no se pudo guardar la conexión (user_id=%s, account_label=%s)",
+            user_id,
+            account_label,
+        )
+        return oauth_failure_page(
+            "Se autorizó con Google pero no se pudo guardar la conexión. Volvé a intentar.", exc
+        )
 
     return oauth_page("Listo, ya podés cerrar esta pestaña.")

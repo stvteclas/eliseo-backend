@@ -313,6 +313,49 @@ def test_callback_google_failure_is_400_and_stores_nothing(db, monkeypatch):
     assert db.query(GoogleCalendarCredential).filter_by(user_id=user_id).count() == 0
 
 
+def test_callback_reports_a_clear_error_when_saving_the_credential_fails(db, monkeypatch):
+    """
+    Regresión: Google ya autorizó (el code se canjeó bien) pero guardar la
+    credencial falla después (ej. columna faltante por una migración no
+    aplicada) — antes esto tiraba un 500 crudo y el usuario creía que había
+    quedado conectado, sin que ninguna fila se guardara.
+    """
+    user_id = _new_user(db)
+    monkeypatch.setattr(google_calendar, "_exchange_code_for_refresh_token", lambda code: "1//token-real")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("column google_calendar_credentials.account_label does not exist")
+
+    monkeypatch.setattr(google_calendar, "encrypt", boom)
+
+    response = client.get(
+        "/connectors/google_calendar/callback", params={"code": "abc", "state": create_oauth_state(user_id)}
+    )
+
+    assert response.status_code == 400
+    assert "no se pudo guardar la conexión" in response.text
+    assert db.query(GoogleCalendarCredential).filter_by(user_id=user_id).count() == 0
+    assert db.query(UserConnector).filter_by(user_id=user_id, service_name="google_calendar").count() == 0
+
+
+def test_callback_shows_the_real_error_when_saving_fails_and_oauth_debug_is_on(db, monkeypatch):
+    monkeypatch.setattr(settings, "oauth_debug", True)
+    user_id = _new_user(db)
+    monkeypatch.setattr(google_calendar, "_exchange_code_for_refresh_token", lambda code: "1//token-real")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("column google_calendar_credentials.account_label does not exist")
+
+    monkeypatch.setattr(google_calendar, "encrypt", boom)
+
+    response = client.get(
+        "/connectors/google_calendar/callback", params={"code": "abc", "state": create_oauth_state(user_id)}
+    )
+
+    assert response.status_code == 400
+    assert "account_label does not exist" in response.text
+
+
 def test_disconnecting_deletes_the_stored_refresh_token(db):
     user_id = _new_user(db)
     _add_credential(db, user_id)

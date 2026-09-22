@@ -32,7 +32,7 @@ from app.api.routes.connectors import upsert_user_connector
 from app.core.config import settings
 from app.core.crypto import encrypt
 from app.core.database import get_db
-from app.core.oauth_pages import oauth_page
+from app.core.oauth_pages import oauth_failure_page, oauth_page
 from app.core.security import create_oauth_state, decode_oauth_state
 from app.models.teams_calendar_credential import TeamsCalendarCredential
 from app.models.user import User
@@ -125,28 +125,41 @@ def callback(
         logger.exception("Falló el canje del code de Microsoft")
         return oauth_page("No se pudo completar la autorización con Microsoft. Volvé a intentar.", 400)
 
-    refresh_token = tokens.get("refresh_token")
-    expires_in = tokens.get("expires_in")
-    values = {
-        "access_token_encrypted": encrypt(access_token),
-        "refresh_token_encrypted": encrypt(refresh_token) if refresh_token else None,
-        "expires_at": datetime.now(timezone.utc) + timedelta(seconds=int(expires_in)) if expires_in else None,
-    }
+    try:
+        refresh_token = tokens.get("refresh_token")
+        expires_in = tokens.get("expires_in")
+        values = {
+            "access_token_encrypted": encrypt(access_token),
+            "refresh_token_encrypted": encrypt(refresh_token) if refresh_token else None,
+            "expires_at": datetime.now(timezone.utc) + timedelta(seconds=int(expires_in)) if expires_in else None,
+        }
 
-    credential = (
-        db.query(TeamsCalendarCredential)
-        .filter(TeamsCalendarCredential.user_id == user_id, TeamsCalendarCredential.account_label == account_label)
-        .first()
-    )
-    if credential:
-        for field, value in values.items():
-            setattr(credential, field, value)
-    else:
-        db.add(TeamsCalendarCredential(user_id=user_id, account_label=account_label, **values))
-    db.commit()
+        credential = (
+            db.query(TeamsCalendarCredential)
+            .filter(TeamsCalendarCredential.user_id == user_id, TeamsCalendarCredential.account_label == account_label)
+            .first()
+        )
+        if credential:
+            for field, value in values.items():
+                setattr(credential, field, value)
+        else:
+            db.add(TeamsCalendarCredential(user_id=user_id, account_label=account_label, **values))
+        db.commit()
 
-    upsert_user_connector(
-        db, user_id, SERVICE_NAME, scope="read_only", store_credential=True, account_label=account_label
-    )
+        upsert_user_connector(
+            db, user_id, SERVICE_NAME, scope="read_only", store_credential=True, account_label=account_label
+        )
+    except Exception as exc:
+        db.rollback()
+        # Microsoft ya autorizó en este punto — si esto falla, el usuario cree
+        # que quedó conectado, así que hay que loguear fuerte.
+        logger.exception(
+            "Se autorizó con Microsoft pero no se pudo guardar la conexión (user_id=%s, account_label=%s)",
+            user_id,
+            account_label,
+        )
+        return oauth_failure_page(
+            "Se autorizó con Microsoft pero no se pudo guardar la conexión. Volvé a intentar.", exc
+        )
 
     return oauth_page("Listo, ya podés cerrar esta pestaña.")
