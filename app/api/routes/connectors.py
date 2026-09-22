@@ -8,6 +8,7 @@ from app.core.database import get_db
 from app.models.connector import UserConnector
 from app.models.google_calendar_credential import GoogleCalendarCredential
 from app.models.mercadopago_credential import MercadoPagoCredential
+from app.models.teams_calendar_credential import TeamsCalendarCredential
 from app.models.user import User
 from app.schemas.connector import ConnectorCreate, ConnectorOut
 
@@ -17,6 +18,7 @@ router = APIRouter(prefix="/connectors", tags=["connectors"])
 CREDENTIAL_MODELS = {
     "google_calendar": GoogleCalendarCredential,
     "mercadopago": MercadoPagoCredential,
+    "teams_calendar": TeamsCalendarCredential,
 }
 
 

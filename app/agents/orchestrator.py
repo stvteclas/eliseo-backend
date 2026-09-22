@@ -19,8 +19,9 @@ from langgraph.prebuilt import create_react_agent
 
 import math
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+import httpx
 import mercadopago
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -32,6 +33,7 @@ from app.core.crypto import decrypt
 from app.models.connector import UserConnector
 from app.models.google_calendar_credential import GoogleCalendarCredential
 from app.models.mercadopago_credential import MercadoPagoCredential
+from app.models.teams_calendar_credential import TeamsCalendarCredential
 
 SYSTEM_PROMPT = (
     "Sos Eliseo, un asistente de voz argentino, cálido y directo. "
@@ -204,13 +206,80 @@ def build_mercadopago_tool(user_id: int, db: Session, account_label: str = "defa
     )
 
 
+def build_teams_calendar_tool(user_id: int, db: Session, account_label: str = "default"):
+    """
+    Herramienta de Microsoft Teams/Outlook Calendar de UNA cuenta puntual del
+    usuario (HU-T22, multi-cuenta desde el vamos). Devuelve None si esa
+    cuenta no está conectada.
+
+    Sin SDK (msal): llama a Microsoft Graph directo con httpx. Igual que
+    Mercado Pago, si el token venció, la tool pide reconectar esa cuenta en
+    vez de refrescarlo sola — el refresh automático con refresh_token queda
+    para más adelante (no bloquea esta tarea).
+    """
+    credential = (
+        db.query(TeamsCalendarCredential)
+        .filter(TeamsCalendarCredential.user_id == user_id, TeamsCalendarCredential.account_label == account_label)
+        .first()
+    )
+    if credential is None:
+        return None
+
+    access_token = decrypt(credential.access_token_encrypted)
+    expires_at = credential.expires_at
+    account_note = "" if account_label == "default" else f" de la cuenta '{account_label}'"
+    reconnect_message = f"La conexión con el calendario de Teams{account_note} venció. Hay que volver a conectarla."
+
+    def get_teams_calendar_events() -> str:
+        if _is_expired(expires_at):
+            return reconnect_message
+
+        now = datetime.now(timezone.utc)
+        try:
+            response = httpx.get(
+                "https://graph.microsoft.com/v1.0/me/calendarview",
+                params={
+                    "startDateTime": now.isoformat(),
+                    "endDateTime": (now + timedelta(days=7)).isoformat(),
+                    "$orderby": "start/dateTime",
+                },
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=15,
+            )
+        except Exception:
+            return "No pude leer el calendario de Teams en este momento."
+
+        if response.status_code in (401, 403):
+            return reconnect_message
+        if response.status_code != 200:
+            return "No pude leer el calendario de Teams en este momento."
+
+        events = response.json().get("value", [])
+        if not events:
+            return "No hay eventos próximos en ese calendario de Teams."
+        return "\n".join(
+            f"{event['start']['dateTime']} — {event.get('subject', '(sin título)')}" for event in events
+        )
+
+    description = "Devuelve los próximos eventos del calendario de Microsoft Teams/Outlook del usuario."
+    if account_label != "default":
+        description = f"Devuelve los próximos eventos del calendario de Teams de la cuenta '{account_label}'."
+
+    return StructuredTool.from_function(
+        func=get_teams_calendar_events,
+        name=f"get_teams_calendar_events{_account_suffix(account_label)}",
+        description=description,
+    )
+
+
 # service_name -> función que arma la tool de esa cuenta (HU-T21: multi-cuenta).
 # get_tools_for_user itera todas las filas de UserConnector, no una por
-# servicio: un usuario con 3 conectores "teams_calendar" (HU-T22, cuando
-# exista) termina con 3 tools distintas, una por cuenta.
+# servicio: un usuario con 3 conectores "teams_calendar" (HU-T22) termina
+# con 3 tools distintas, una por cuenta.
 ACCOUNT_TOOL_BUILDERS = {
     "google_calendar": build_calendar_tool,
     "mercadopago": build_mercadopago_tool,
+    "teams_calendar": build_teams_calendar_tool,
 }
 
 

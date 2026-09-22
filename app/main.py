@@ -1,9 +1,15 @@
 from fastapi import FastAPI
 
-from app.api.routes import auth, chat, connectors, google_calendar, health, mercadopago
+from app.api.routes import auth, chat, connectors, google_calendar, health, mercadopago, teams_calendar
 from app.core.config import settings
 from app.core.database import Base, engine
-from app.models import connector, google_calendar_credential, mercadopago_credential, user  # noqa: F401 — necesario para que create_all vea los modelos
+from app.models import (  # noqa: F401 — necesario para que create_all vea los modelos
+    connector,
+    google_calendar_credential,
+    mercadopago_credential,
+    teams_calendar_credential,
+    user,
+)
 
 app = FastAPI(title="Eliseo", version="0.1.0")
 
@@ -18,6 +24,7 @@ app.include_router(chat.router)
 app.include_router(connectors.router)
 app.include_router(google_calendar.router)
 app.include_router(mercadopago.router)
+app.include_router(teams_calendar.router)
 
 
 @app.get("/")

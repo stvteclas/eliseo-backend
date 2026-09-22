@@ -56,5 +56,14 @@ class Settings(BaseSettings):
     mp_client_secret: str = ""
     mp_redirect_uri: str = "http://localhost:8000/connectors/mercadopago/callback"
 
+    # Microsoft Teams/Outlook Calendar (HU-T22): app registrada en Azure (Entra ID).
+    # ms_tenant="common" acepta cuentas de cualquier organización, no solo una — importante
+    # porque las cuentas que un usuario conecta (banco, agencia, personal) suelen ser de
+    # organizaciones distintas.
+    ms_client_id: str = ""
+    ms_client_secret: str = ""
+    ms_redirect_uri: str = "http://localhost:8000/connectors/teams_calendar/callback"
+    ms_tenant: str = "common"
+
 
 settings = Settings()
