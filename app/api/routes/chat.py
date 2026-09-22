@@ -19,6 +19,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     actions: list[dict] = Field(default_factory=list)
+    speak_language: str | None = None
 
 
 @router.post("", response_model=ChatResponse)
@@ -33,7 +34,7 @@ async def chat(
     algo fijo. Protegido: solo usuarios autenticados.
     """
     try:
-        reply, actions = await handle_user_message(
+        reply, actions, speak_language = await handle_user_message(
             data.message,
             current_user.id,
             db,
@@ -45,4 +46,4 @@ async def chat(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="El servidor de herramientas (MCP) no está disponible.",
         )
-    return ChatResponse(reply=reply, actions=actions)
+    return ChatResponse(reply=reply, actions=actions, speak_language=speak_language)

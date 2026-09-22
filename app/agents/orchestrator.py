@@ -47,7 +47,9 @@ SYSTEM_PROMPT_TEMPLATE = (
     "solo texto hablable. "
     "Las herramientas son para datos o acciones externas "
     "(clima, hora, calendario, pagos, notas, cálculos, viaje, noticias, "
-    "traducción, temporizador, avisos locales, llamar contactos, resumen del día). "
+    "traducción, modo traductor, temporizador, avisos locales, llamar contactos, resumen del día). "
+    "Si te piden que hagas de traductor entre dos idiomas "
+    "(ej. español y ruso), usá start_translator_mode. "
     "Para charlar, explicar, inventar, contar un cuento, chistes, trivia o "
     "adivinanzas, respondé vos mismo sin herramientas. "
     "Si te piden un dato externo y no tenés la herramienta, decilo en vez de inventar el dato."
@@ -484,22 +486,44 @@ async def handle_user_message(
     db: Session,
     latitude: float | None = None,
     longitude: float | None = None,
-) -> tuple[str, list]:
+) -> tuple[str, list, str | None]:
     """
     Responde un mensaje usando herramientas built-in y las que el usuario conectó.
-    Devuelve (texto_hablado, acciones_para_la_app).
+    Devuelve (texto_hablado, acciones_para_la_app, idioma_tts_opcional).
     """
     if not settings.anthropic_api_key:
         raise RuntimeError("Falta ANTHROPIC_API_KEY en la configuración.")
+
+    from app.services import translate as translate_service
 
     user = db.query(User).filter(User.id == user_id).first()
     persona = user.persona if user is not None else "elisse"
 
     reset_client_actions()
+
+    # Modo traductor activo: traduce al otro idioma sin pasar por el agente,
+    # salvo que pidan salir.
+    if (
+        user is not None
+        and user.translator_lang_a
+        and user.translator_lang_b
+    ):
+        if translate_service.is_translator_exit(message):
+            user.translator_lang_a = None
+            user.translator_lang_b = None
+            db.add(user)
+            db.commit()
+            return "Listo, salí del modo traductor.", [], "es"
+
+        translated, speak_lang = translate_service.translate_bidirectional(
+            message, user.translator_lang_a, user.translator_lang_b
+        )
+        return translated, [], speak_lang
+
     agent = await _build_agent(
         user_id, db, persona=persona, latitude=latitude, longitude=longitude
     )
     result = await agent.ainvoke({"messages": [{"role": "user", "content": message}]})
 
     last_message = result["messages"][-1]
-    return last_message.content, drain_client_actions()
+    return last_message.content, drain_client_actions(), None

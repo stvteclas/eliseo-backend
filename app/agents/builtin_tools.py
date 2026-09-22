@@ -35,6 +35,8 @@ BUILTIN_TOOL_NAMES = [
     "get_travel_time",
     "get_news_headlines",
     "translate_text",
+    "start_translator_mode",
+    "stop_translator_mode",
     "schedule_local_reminder",
     "call_contact",
     "get_daily_briefing",
@@ -165,6 +167,48 @@ def build_builtin_tools(
         """Traduce text al idioma target_lang (código o nombre: en, inglés, pt...)."""
         return translate_service.translate_text(text, target_lang=target_lang, source_lang=source_lang)
 
+    def start_translator_mode(lang_a: str, lang_b: str) -> str:
+        """
+        Activa modo traductor bidireccional entre lang_a y lang_b
+        (ej. 'español' y 'ruso', o 'es' y 'ru').
+        Todo lo que diga el usuario se traduce al otro idioma hasta que lo apague.
+        """
+        if user_id is None or db is None:
+            return "No pude activar el traductor ahora."
+        a = translate_service.normalize_lang(lang_a)
+        b = translate_service.normalize_lang(lang_b)
+        if a == b:
+            return "Necesito dos idiomas distintos, por ejemplo español y ruso."
+        from app.models.user import User
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is None:
+            return "No encontré tu usuario."
+        user.translator_lang_a = a
+        user.translator_lang_b = b
+        db.add(user)
+        db.commit()
+        return (
+            f"Listo, modo traductor entre {translate_service._label(a)} y "
+            f"{translate_service._label(b)}. Hablame en uno y te lo digo en el otro. "
+            f"Para salir, decí salí del modo traductor."
+        )
+
+    def stop_translator_mode() -> str:
+        """Apaga el modo traductor bidireccional."""
+        if user_id is None or db is None:
+            return "No pude apagar el traductor ahora."
+        from app.models.user import User
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is None:
+            return "No encontré tu usuario."
+        user.translator_lang_a = None
+        user.translator_lang_b = None
+        db.add(user)
+        db.commit()
+        return "Listo, salí del modo traductor."
+
     def schedule_local_reminder(message: str, minutes: float = 0, seconds: float = 0) -> str:
         """
         Programa una notificación local en el teléfono (push local).
@@ -292,7 +336,20 @@ def build_builtin_tools(
         StructuredTool.from_function(
             func=translate_text,
             name="translate_text",
-            description="Traduce un texto. target_lang por defecto 'en' (inglés).",
+            description="Traduce un texto puntual. target_lang por defecto 'en' (inglés).",
+        ),
+        StructuredTool.from_function(
+            func=start_translator_mode,
+            name="start_translator_mode",
+            description=(
+                "Activa modo traductor continuo entre dos idiomas (lang_a, lang_b), "
+                "ej. español y ruso. Usar cuando piden 'haceme de traductor'."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=stop_translator_mode,
+            name="stop_translator_mode",
+            description="Apaga el modo traductor continuo.",
         ),
         StructuredTool.from_function(
             func=schedule_local_reminder,

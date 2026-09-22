@@ -27,6 +27,8 @@ cryptography>=43,<47
 # Mercado Pago por usuario (HU-T20)
 mercadopago==2.*
 
+edge-tts==6.1.*
+
 # Testing y calidad
 pytest==8.3.*
 pytest-asyncio==0.24.*

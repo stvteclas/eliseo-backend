@@ -134,7 +134,7 @@ def test_chat_passes_authenticated_user_to_orchestrator(monkeypatch):
         received.update(
             message=message, user_id=user_id, db=db, latitude=latitude, longitude=longitude
         )
-        return "ok", []
+        return "ok", [], None
 
     monkeypatch.setattr("app.api.routes.chat.handle_user_message", fake_handle_user_message)
 

@@ -35,6 +35,22 @@ def _ensure_persona_column() -> None:
 
 _ensure_persona_column()
 
+
+def _ensure_translator_columns() -> None:
+    """Agrega columnas de modo traductor si faltan (create_all no altera tablas)."""
+    inspector = inspect(engine)
+    if "users" not in inspector.get_table_names():
+        return
+    columns = {col["name"] for col in inspector.get_columns("users")}
+    with engine.begin() as conn:
+        if "translator_lang_a" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN translator_lang_a VARCHAR"))
+        if "translator_lang_b" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN translator_lang_b VARCHAR"))
+
+
+_ensure_translator_columns()
+
 app.include_router(health.router, tags=["health"])
 app.include_router(auth.router)
 app.include_router(chat.router)
