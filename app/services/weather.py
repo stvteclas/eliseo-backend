@@ -42,18 +42,28 @@ def _describe_code(code: int | None) -> str:
 
 
 def geocode_city(city: str) -> tuple[float, float, str] | None:
-    """Devuelve (lat, lon, nombre_legible) o None si no hay resultados."""
+    """
+    Devuelve (lat, lon, nombre_legible) o None si no hay resultados.
+
+    Eliseo es un asistente para usuarios en Argentina, y el geocoding de
+    Open-Meteo no siempre ordena por relevancia local: "Villa Allende" (Córdoba)
+    devuelve primero una localidad de Chiapas, México, con el mismo nombre.
+    Por eso se piden varios resultados y, si hay uno en Argentina, se prioriza
+    sobre el resto — el usuario puede seguir pidiendo el clima de otro país
+    (ej. "clima en Madrid") sin problema, porque ahí no hay ningún resultado
+    argentino entre los candidatos.
+    """
     with httpx.Client() as client:
         response = client.get(
             GEOCODE_URL,
-            params={"name": city, "count": 1, "language": "es", "format": "json"},
+            params={"name": city, "count": 10, "language": "es", "format": "json"},
             timeout=20,
         )
     response.raise_for_status()
     results = response.json().get("results") or []
     if not results:
         return None
-    place = results[0]
+    place = next((r for r in results if r.get("country_code") == "AR"), results[0])
     name_parts = [place.get("name"), place.get("admin1"), place.get("country")]
     label = ", ".join(part for part in name_parts if part)
     return float(place["latitude"]), float(place["longitude"]), label
