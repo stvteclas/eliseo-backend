@@ -14,6 +14,7 @@ router = APIRouter(prefix="/voice", tags=["voice"])
 
 class TranscribeResponse(BaseModel):
     transcript: str
+    detected_language: str | None = None
 
 
 class SpeakRequest(BaseModel):
@@ -27,16 +28,22 @@ async def transcribe(
     current_user: User = Depends(get_current_user),
 ):
     audio_bytes = await audio.read()
-    detect = bool(current_user.translator_lang_a and current_user.translator_lang_b)
+    candidates = None
+    if current_user.translator_lang_a and current_user.translator_lang_b:
+        candidates = [current_user.translator_lang_a, current_user.translator_lang_b]
     try:
-        transcript = await transcribe_audio(
+        result = await transcribe_audio(
             audio_bytes,
             content_type=audio.content_type or "audio/mp3",
-            detect_language=detect,
+            detect_language=bool(candidates),
+            candidate_languages=candidates,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
-    return TranscribeResponse(transcript=transcript)
+    return TranscribeResponse(
+        transcript=result.transcript,
+        detected_language=result.language,
+    )
 
 
 @router.post("/speak")

@@ -46,7 +46,9 @@ def test_exit_phrase():
     assert translate_service.is_translator_exit("salir del modo traductor")
     assert translate_service.is_translator_exit("Sale del modo traductor")
     assert translate_service.is_translator_exit("dejá de traducir")
+    assert translate_service.is_translator_exit("basta de traducir")
     assert not translate_service.is_translator_exit("traducime esto")
+    assert not translate_service.is_translator_exit("hola qué tal")
 
 
 def test_start_and_stop_translator_mode(db):
@@ -83,6 +85,12 @@ async def test_handle_message_in_translator_mode(db, monkeypatch):
     assert reply == "привет"
     assert speak_lang == "ru"
     assert actions == []
+
+    reply_es, _, speak_es = await handle_user_message(
+        "Привет", user.id, db, source_language="ru"
+    )
+    assert reply_es == "hola"
+    assert speak_es == "es"
 
 
 @pytest.mark.asyncio

@@ -130,9 +130,16 @@ async def test_tools_are_per_user_and_revocable(db, sandbox_mcp):
 def test_chat_passes_authenticated_user_to_orchestrator(monkeypatch):
     received = {}
 
-    async def fake_handle_user_message(message, user_id, db, latitude=None, longitude=None):
+    async def fake_handle_user_message(
+        message, user_id, db, latitude=None, longitude=None, source_language=None
+    ):
         received.update(
-            message=message, user_id=user_id, db=db, latitude=latitude, longitude=longitude
+            message=message,
+            user_id=user_id,
+            db=db,
+            latitude=latitude,
+            longitude=longitude,
+            source_language=source_language,
         )
         return "ok", [], None
 

@@ -14,6 +14,7 @@ class ChatRequest(BaseModel):
     message: str
     latitude: float | None = None
     longitude: float | None = None
+    source_language: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -40,6 +41,7 @@ async def chat(
             db,
             latitude=data.latitude,
             longitude=data.longitude,
+            source_language=data.source_language,
         )
     except ToolServerUnavailable:
         raise HTTPException(

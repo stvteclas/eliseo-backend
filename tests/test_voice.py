@@ -76,9 +76,9 @@ DEEPGRAM_TRANSCRIBE_BODY = {
 async def test_transcribe_audio_returns_the_transcript(monkeypatch):
     calls = _mock_post(monkeypatch, FakeResponse(json_data=DEEPGRAM_TRANSCRIBE_BODY))
 
-    transcript = await transcribe_audio(b"bytes-de-audio", content_type="audio/wav")
+    result = await transcribe_audio(b"bytes-de-audio", content_type="audio/wav")
 
-    assert transcript == "¿qué hora es?"
+    assert result.transcript == "¿qué hora es?"
     call = calls[0]
     assert call["url"] == "https://api.deepgram.com/v1/listen"
     assert call["params"] == {"model": "nova-3", "language": "es"}
@@ -165,7 +165,7 @@ def test_transcribe_endpoint_returns_the_transcript(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"transcript": "¿qué hora es?"}
+    assert response.json()["transcript"] == "¿qué hora es?"
 
 
 def test_speak_endpoint_returns_audio_mpeg(monkeypatch):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 import httpx
 
@@ -27,22 +28,30 @@ LANG_ALIASES = {
 }
 
 _CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
-_EXIT_RE = re.compile(
-    r"("
-    r"sal(ir|í|i|e|gan)?(\s+del)?\s+modo\s+traductor|"
-    r"sal(ir|í|i)?\s+del\s+traductor|"
-    r"dej(á|a|ar)?\s+de\s+traducir|"
-    r"cancel(á|a|ar)?\s+(el\s+)?traductor|"
-    r"apag(á|a|ar)?\s+(el\s+)?modo\s+traductor|"
-    r"modo\s+normal|"
-    r"stop\s+translat|"
-    r"exit\s+translator|"
-    r"хватит|"
-    r"стоп\s+перевод|"
-    r"выйди\s+из\s+перевод"
-    r")",
-    flags=re.IGNORECASE,
+_EXIT_HINTS = (
+    "salir",
+    "sali",
+    "sale",
+    "salgan",
+    "deja",
+    "dejar",
+    "cance",
+    "apaga",
+    "apagar",
+    "basta",
+    "stop",
+    "exit",
+    "termino",
+    "termina",
 )
+
+
+def _fold(text: str) -> str:
+    """Minúsculas sin acentos, para matchear STT imperfecto."""
+    raw = unicodedata.normalize("NFD", text or "")
+    raw = "".join(ch for ch in raw if unicodedata.category(ch) != "Mn")
+    raw = raw.lower()
+    return re.sub(r"[^a-z0-9\s]", " ", raw)
 
 
 def normalize_lang(lang: str, default: str = "es") -> str:
@@ -66,7 +75,12 @@ def _label(code: str) -> str:
     }.get(code, code)
 
 
-def detect_lang_in_pair(text: str, lang_a: str, lang_b: str) -> str:
+def detect_lang_in_pair(
+    text: str,
+    lang_a: str,
+    lang_b: str,
+    hint: str | None = None,
+) -> str:
     """Elige cuál de los dos idiomas del par parece ser el del texto."""
     a = normalize_lang(lang_a)
     b = normalize_lang(lang_b)
@@ -74,12 +88,16 @@ def detect_lang_in_pair(text: str, lang_a: str, lang_b: str) -> str:
     if not body:
         return a
 
+    if hint:
+        h = normalize_lang(hint, default="")
+        if h in (a, b):
+            return h
+
     if a == "ru" or b == "ru":
         if _CYRILLIC_RE.search(body):
             return "ru"
         return a if a != "ru" else b
 
-    # Sin cirílico: heurística simple es vs en
     lowered = body.lower()
     es_markers = (" qué", " que ", "cómo", "como ", "está", "esta ", "hola", "gracias", "por favor")
     en_markers = (" the ", " what", " how ", " is ", "hello", "thanks", "please")
@@ -94,7 +112,29 @@ def detect_lang_in_pair(text: str, lang_a: str, lang_b: str) -> str:
 
 
 def is_translator_exit(text: str) -> bool:
-    return bool(_EXIT_RE.search(text or ""))
+    """
+    Detecta pedidos de salir del modo traductor aunque el STT cambie
+    conjugaciones (salir/salí/sale) o pierda acentos.
+    """
+    original = text or ""
+    folded = _fold(original)
+    compact = " ".join(folded.split())
+
+    if "modo normal" in compact or "basta de traducir" in compact:
+        return True
+    if "хватит" in original.lower() or "стоп перевод" in original.lower():
+        return True
+
+    mentions_mode = (
+        "traductor" in compact
+        or "translator" in compact
+        or "traducir" in compact
+        or "перевод" in original.lower()
+    )
+    if not mentions_mode:
+        return False
+
+    return any(hint in compact for hint in _EXIT_HINTS)
 
 
 def translate_raw(text: str, source_lang: str, target_lang: str) -> str:
@@ -121,14 +161,19 @@ def translate_raw(text: str, source_lang: str, target_lang: str) -> str:
         return ""
 
 
-def translate_bidirectional(text: str, lang_a: str, lang_b: str) -> tuple[str, str]:
+def translate_bidirectional(
+    text: str,
+    lang_a: str,
+    lang_b: str,
+    source_hint: str | None = None,
+) -> tuple[str, str]:
     """
     Detecta idioma del par y traduce al otro.
     Devuelve (texto_traducido, codigo_idioma_destino) para el TTS.
     """
     a = normalize_lang(lang_a)
     b = normalize_lang(lang_b)
-    source = detect_lang_in_pair(text, a, b)
+    source = detect_lang_in_pair(text, a, b, hint=source_hint)
     target = b if source == a else a
     translated = translate_raw(text, source, target)
     if not translated:

@@ -486,6 +486,7 @@ async def handle_user_message(
     db: Session,
     latitude: float | None = None,
     longitude: float | None = None,
+    source_language: str | None = None,
 ) -> tuple[str, list, str | None]:
     """
     Responde un mensaje usando herramientas built-in y las que el usuario conectó.
@@ -516,7 +517,10 @@ async def handle_user_message(
             return "Listo, salí del modo traductor.", [], "es"
 
         translated, speak_lang = translate_service.translate_bidirectional(
-            message, user.translator_lang_a, user.translator_lang_b
+            message,
+            user.translator_lang_a,
+            user.translator_lang_b,
+            source_hint=source_language,
         )
         return translated, [], speak_lang
 

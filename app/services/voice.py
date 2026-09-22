@@ -1,14 +1,15 @@
 """
 Voz de Eliseo (HU-T07): transcripción (STT) y síntesis (TTS).
 
-STT: Deepgram nova-3 (español fijo o detección de idioma en modo traductor).
-TTS: Deepgram Aura-2 para es/en; edge-tts (Microsoft) para ruso y otros
-que Aura no cubre.
+STT: Deepgram nova-3. En modo traductor prueba cada idioma del par y
+elige el de mayor confianza (así el ruso no se fuerza a español).
+TTS: Deepgram Aura-2 para es/en; edge-tts para ruso y otros.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 import edge_tts
 import httpx
@@ -24,7 +25,6 @@ PERSONA_TTS_MODEL = {
 }
 DEFAULT_PERSONA = "eliseo"
 
-# Idioma -> voz TTS (Deepgram Aura o edge-tts).
 DEEPGRAM_LANG_MODEL = {
     "es": {
         "eliseo": "aura-2-sirio-es",
@@ -80,6 +80,13 @@ _MULTI_SPACE_RE = re.compile(r"\s{2,}")
 _CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
 
 
+@dataclass
+class TranscriptResult:
+    transcript: str
+    language: str | None = None
+    confidence: float = 0.0
+
+
 def text_for_speech(text: str) -> str:
     cleaned = _EMOJI_RE.sub(" ", text or "")
     cleaned = _SHORTCODE_RE.sub(" ", cleaned)
@@ -105,19 +112,32 @@ def tts_model_for_persona(persona: str) -> str:
     return PERSONA_TTS_MODEL.get(persona, PERSONA_TTS_MODEL[DEFAULT_PERSONA])
 
 
-async def transcribe_audio(
+def _parse_deepgram_listen(payload: dict, fallback_lang: str | None = None) -> TranscriptResult:
+    channel = (payload.get("results") or {}).get("channels") or [{}]
+    channel0 = channel[0] if channel else {}
+    alts = channel0.get("alternatives") or [{}]
+    alt0 = alts[0] if alts else {}
+    transcript = (alt0.get("transcript") or "").strip()
+    confidence = float(alt0.get("confidence") or 0.0)
+    detected = channel0.get("detected_language") or payload.get("results", {}).get("detected_language")
+    language = (detected or fallback_lang or None)
+    if isinstance(language, str):
+        language = language.strip().lower()[:2] or None
+    return TranscriptResult(transcript=transcript, language=language, confidence=confidence)
+
+
+async def _listen_once(
     audio_bytes: bytes,
-    content_type: str = "audio/mp3",
+    content_type: str,
     *,
+    language: str | None = None,
     detect_language: bool = False,
-    language: str = "es",
-) -> str:
-    """Transcribe audio. En modo traductor usá detect_language=True."""
+) -> TranscriptResult:
     params: dict = {"model": "nova-3"}
     if detect_language:
         params["detect_language"] = "true"
-    else:
-        params["language"] = language or "es"
+    elif language:
+        params["language"] = language
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
@@ -128,7 +148,51 @@ async def transcribe_audio(
             timeout=30,
         )
     response.raise_for_status()
-    return response.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
+    return _parse_deepgram_listen(response.json(), fallback_lang=language)
+
+
+async def transcribe_audio(
+    audio_bytes: bytes,
+    content_type: str = "audio/mp3",
+    *,
+    detect_language: bool = False,
+    language: str = "es",
+    candidate_languages: list[str] | None = None,
+) -> TranscriptResult:
+    """
+    Transcribe audio.
+    Si hay candidate_languages (modo traductor), prueba cada idioma y se queda
+    con el transcript de mayor confianza.
+    """
+    langs = []
+    for code in candidate_languages or []:
+        c = (code or "").strip().lower()[:2]
+        if c and c not in langs:
+            langs.append(c)
+
+    if len(langs) >= 2:
+        best: TranscriptResult | None = None
+        for lang in langs:
+            try:
+                result = await _listen_once(
+                    audio_bytes, content_type, language=lang, detect_language=False
+                )
+            except Exception:
+                continue
+            if not result.transcript:
+                continue
+            result.language = lang
+            if best is None or result.confidence > best.confidence:
+                best = result
+        if best is not None:
+            return best
+        # fallback: detección automática
+        return await _listen_once(audio_bytes, content_type, detect_language=True)
+
+    if detect_language:
+        return await _listen_once(audio_bytes, content_type, detect_language=True)
+
+    return await _listen_once(audio_bytes, content_type, language=language or "es")
 
 
 async def _synthesize_deepgram(text: str, model: str) -> bytes:
@@ -160,7 +224,6 @@ async def synthesize_speech(
     persona: str = DEFAULT_PERSONA,
     language: str | None = None,
 ) -> bytes:
-    """Convierte texto en voz. language fuerza el idioma (es/en/ru/...)."""
     spoken = text_for_speech(text)
     persona_key = persona if persona in ("eliseo", "elisse") else DEFAULT_PERSONA
     lang = detect_speech_language(spoken, language)
@@ -176,5 +239,4 @@ async def synthesize_speech(
     try:
         return await _synthesize_edge(spoken, voice)
     except Exception:
-        # Fallback: leer con voz española si falla el motor externo.
         return await _synthesize_deepgram(spoken, tts_model_for_persona(persona_key))
