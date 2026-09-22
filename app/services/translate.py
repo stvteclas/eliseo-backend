@@ -28,15 +28,19 @@ LANG_ALIASES = {
 
 _CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
 _EXIT_RE = re.compile(
-    r"\b("
-    r"sal[ií](\s+del)?\s+modo\s+traductor|"
-    r"dej[aá]\s+de\s+traducir|"
-    r"cancel[aá]\s+traductor|"
-    r"stop\s+translati|"
+    r"("
+    r"sal(ir|í|i|e|gan)?(\s+del)?\s+modo\s+traductor|"
+    r"sal(ir|í|i)?\s+del\s+traductor|"
+    r"dej(á|a|ar)?\s+de\s+traducir|"
+    r"cancel(á|a|ar)?\s+(el\s+)?traductor|"
+    r"apag(á|a|ar)?\s+(el\s+)?modo\s+traductor|"
+    r"modo\s+normal|"
+    r"stop\s+translat|"
     r"exit\s+translator|"
     r"хватит|"
-    r"стоп\s+перевод"
-    r")\b",
+    r"стоп\s+перевод|"
+    r"выйди\s+из\s+перевод"
+    r")",
     flags=re.IGNORECASE,
 )
 

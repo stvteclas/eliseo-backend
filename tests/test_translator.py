@@ -43,6 +43,9 @@ def test_detect_russian_vs_spanish():
 
 def test_exit_phrase():
     assert translate_service.is_translator_exit("salí del modo traductor")
+    assert translate_service.is_translator_exit("salir del modo traductor")
+    assert translate_service.is_translator_exit("Sale del modo traductor")
+    assert translate_service.is_translator_exit("dejá de traducir")
     assert not translate_service.is_translator_exit("traducime esto")
 
 
