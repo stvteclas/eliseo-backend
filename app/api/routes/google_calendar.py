@@ -62,14 +62,15 @@ def _exchange_code_for_refresh_token(code: str) -> str | None:
 
 
 @router.get("/authorize")
-def authorize(current_user: User = Depends(get_current_user)) -> dict:
+def authorize(account_label: str = "default", current_user: User = Depends(get_current_user)) -> dict:
+    """account_label (HU-T21) distingue esta cuenta de Calendar de otras que el usuario conecte."""
     if not settings.google_client_id or not settings.google_client_secret:
         raise HTTPException(status_code=503, detail="Google Calendar no está configurado en el servidor.")
 
     authorize_url, _ = _build_flow().authorization_url(
         access_type="offline",  # para que Google devuelva un refresh token
         prompt="consent",  # y lo devuelva siempre, aunque el usuario ya haya autorizado antes
-        state=create_oauth_state(current_user.id),
+        state=create_oauth_state(current_user.id, account_label),
     )
     return {"authorize_url": authorize_url}
 
@@ -84,9 +85,10 @@ def callback(
     if error:
         return oauth_page("No se autorizó el acceso al calendario. Podés cerrar esta pestaña e intentar de nuevo.", 400)
 
-    user_id = decode_oauth_state(state) if state else None
-    if user_id is None or not code:
+    decoded = decode_oauth_state(state) if state else None
+    if decoded is None or not code:
         return oauth_page("El enlace de autorización no es válido o venció. Volvé a empezar desde la app.", 400)
+    user_id, account_label = decoded
 
     if db.query(User).filter(User.id == user_id).first() is None:
         return oauth_page("El enlace de autorización no es válido.", 400)
@@ -98,13 +100,23 @@ def callback(
     if not refresh_token:
         return oauth_page("Google no entregó el permiso necesario. Volvé a intentar.", 400)
 
-    credential = db.query(GoogleCalendarCredential).filter(GoogleCalendarCredential.user_id == user_id).first()
+    credential = (
+        db.query(GoogleCalendarCredential)
+        .filter(GoogleCalendarCredential.user_id == user_id, GoogleCalendarCredential.account_label == account_label)
+        .first()
+    )
     if credential:
         credential.refresh_token_encrypted = encrypt(refresh_token)
     else:
-        db.add(GoogleCalendarCredential(user_id=user_id, refresh_token_encrypted=encrypt(refresh_token)))
+        db.add(
+            GoogleCalendarCredential(
+                user_id=user_id, account_label=account_label, refresh_token_encrypted=encrypt(refresh_token)
+            )
+        )
     db.commit()
 
-    upsert_user_connector(db, user_id, SERVICE_NAME, scope="read_only", store_credential=True)
+    upsert_user_connector(
+        db, user_id, SERVICE_NAME, scope="read_only", store_credential=True, account_label=account_label
+    )
 
     return oauth_page("Listo, ya podés cerrar esta pestaña.")

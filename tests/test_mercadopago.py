@@ -223,7 +223,7 @@ def test_authorize_returns_mercadopago_url_with_signed_state(db):
     assert query["response_type"] == ["code"]
     assert query["platform_id"] == ["mp"]
     assert query["redirect_uri"] == [settings.mp_redirect_uri]
-    assert decode_oauth_state(query["state"][0]) == user_id
+    assert decode_oauth_state(query["state"][0]) == (user_id, "default")
 
 
 def test_authorize_without_mercadopago_configured_is_503(db, monkeypatch):

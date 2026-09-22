@@ -92,7 +92,8 @@ def _exchange_code_for_tokens(code: str) -> dict:
 
 
 @router.get("/authorize")
-def authorize(current_user: User = Depends(get_current_user)) -> dict:
+def authorize(account_label: str = "default", current_user: User = Depends(get_current_user)) -> dict:
+    """account_label (HU-T21) distingue esta cuenta de Mercado Pago de otras que el usuario conecte."""
     if not settings.mp_client_id or not settings.mp_client_secret:
         raise HTTPException(status_code=503, detail="Mercado Pago no está configurado en el servidor.")
 
@@ -102,7 +103,7 @@ def authorize(current_user: User = Depends(get_current_user)) -> dict:
             "response_type": "code",
             "platform_id": "mp",
             "redirect_uri": _redirect_uri(),
-            "state": create_oauth_state(current_user.id),
+            "state": create_oauth_state(current_user.id, account_label),
         }
     )
     return {"authorize_url": f"{AUTH_URL}?{query}"}
@@ -119,10 +120,11 @@ def callback(
         logger.warning("Callback de Mercado Pago con error=%r", error)
         return oauth_page("No se autorizó el acceso a Mercado Pago. Podés cerrar esta pestaña e intentar de nuevo.", 400)
 
-    user_id = decode_oauth_state(state) if state else None
-    if user_id is None or not code:
+    decoded = decode_oauth_state(state) if state else None
+    if decoded is None or not code:
         logger.warning("Callback de Mercado Pago con state inválido o vencido, o sin code (hay state: %s, hay code: %s)", bool(state), bool(code))
         return oauth_page("El enlace de autorización no es válido o venció. Volvé a empezar desde la app.", 400)
+    user_id, account_label = decoded
 
     if db.query(User).filter(User.id == user_id).first() is None:
         logger.warning("Callback de Mercado Pago para un usuario que no existe (user_id=%s)", user_id)
@@ -150,14 +152,20 @@ def callback(
         "expires_at": datetime.now(timezone.utc) + timedelta(seconds=int(expires_in)) if expires_in else None,
     }
 
-    credential = db.query(MercadoPagoCredential).filter(MercadoPagoCredential.user_id == user_id).first()
+    credential = (
+        db.query(MercadoPagoCredential)
+        .filter(MercadoPagoCredential.user_id == user_id, MercadoPagoCredential.account_label == account_label)
+        .first()
+    )
     if credential:
         for field, value in values.items():
             setattr(credential, field, value)
     else:
-        db.add(MercadoPagoCredential(user_id=user_id, **values))
+        db.add(MercadoPagoCredential(user_id=user_id, account_label=account_label, **values))
     db.commit()
 
-    upsert_user_connector(db, user_id, SERVICE_NAME, scope="read_write", store_credential=True)
+    upsert_user_connector(
+        db, user_id, SERVICE_NAME, scope="read_write", store_credential=True, account_label=account_label
+    )
 
     return oauth_page("Listo, ya podés cerrar esta pestaña.")

@@ -21,19 +21,32 @@ CREDENTIAL_MODELS = {
 
 
 def upsert_user_connector(
-    db: Session, user_id: int, service_name: str, scope: str, store_credential: bool
+    db: Session, user_id: int, service_name: str, scope: str, store_credential: bool, account_label: str = "default"
 ) -> tuple[UserConnector, bool]:
-    """Crea el conector del usuario para ese servicio, o lo actualiza. Devuelve (conector, creado)."""
+    """
+    Crea el conector del usuario para esa cuenta puntual de ese servicio, o
+    la actualiza si ya existe. Devuelve (conector, creado). Conectar el mismo
+    servicio con un account_label nuevo crea una fila nueva, no pisa la
+    anterior (HU-T21).
+    """
     connector = (
         db.query(UserConnector)
-        .filter(UserConnector.user_id == user_id, UserConnector.service_name == service_name)
+        .filter(
+            UserConnector.user_id == user_id,
+            UserConnector.service_name == service_name,
+            UserConnector.account_label == account_label,
+        )
         .first()
     )
     created = connector is None
 
     if created:
         connector = UserConnector(
-            user_id=user_id, service_name=service_name, scope=scope, store_credential=store_credential
+            user_id=user_id,
+            service_name=service_name,
+            account_label=account_label,
+            scope=scope,
+            store_credential=store_credential,
         )
         db.add(connector)
     else:
@@ -54,7 +67,7 @@ def upsert_connector(
     db: Session = Depends(get_db),
 ):
     connector, created = upsert_user_connector(
-        db, current_user.id, data.service_name, data.scope, data.store_credential
+        db, current_user.id, data.service_name, data.scope, data.store_credential, data.account_label
     )
     if not created:
         response.status_code = status.HTTP_200_OK
@@ -69,21 +82,28 @@ def list_connectors(current_user: User = Depends(get_current_user), db: Session 
 @router.delete("/{service_name}")
 def delete_connector(
     service_name: str,
+    account_label: str = "default",
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     connector = (
         db.query(UserConnector)
-        .filter(UserConnector.user_id == current_user.id, UserConnector.service_name == service_name)
+        .filter(
+            UserConnector.user_id == current_user.id,
+            UserConnector.service_name == service_name,
+            UserConnector.account_label == account_label,
+        )
         .first()
     )
     if connector is None:
-        raise HTTPException(status_code=404, detail="Ese servicio no está conectado.")
+        raise HTTPException(status_code=404, detail="Esa cuenta de ese servicio no está conectada.")
 
     db.delete(connector)
     credential_model = CREDENTIAL_MODELS.get(service_name)
     if credential_model is not None:
-        # Desconectar también borra los tokens guardados, no solo el permiso.
-        db.query(credential_model).filter(credential_model.user_id == current_user.id).delete()
+        # Desconectar también borra los tokens guardados de ESA cuenta puntual, no solo el permiso.
+        db.query(credential_model).filter(
+            credential_model.user_id == current_user.id, credential_model.account_label == account_label
+        ).delete()
     db.commit()
-    return {"deleted": service_name}
+    return {"deleted": service_name, "account_label": account_label}

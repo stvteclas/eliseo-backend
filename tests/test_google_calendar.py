@@ -129,10 +129,16 @@ async def test_credential_without_connector_gives_no_tool(db):
 def test_oauth_state_is_not_an_access_token_and_vice_versa():
     state = create_oauth_state(42)
 
-    assert decode_oauth_state(state) == 42
+    assert decode_oauth_state(state) == (42, "default")  # account_label (HU-T21), "default" si no se especifica
     assert decode_access_token(state) is None  # el state no sirve para autenticarse
     assert decode_oauth_state(create_access_token(42)) is None  # ni un access token como state
     assert decode_oauth_state("basura") is None
+
+
+def test_oauth_state_carries_the_account_label():
+    state = create_oauth_state(42, account_label="banco")
+
+    assert decode_oauth_state(state) == (42, "banco")
 
 
 # --- rutas OAuth
@@ -157,7 +163,7 @@ def test_authorize_returns_google_url_with_signed_state(db):
     assert query["scope"] == ["https://www.googleapis.com/auth/calendar.readonly"]
     assert query["redirect_uri"] == [settings.google_redirect_uri]
     assert "code_challenge" not in query  # sin PKCE: el callback no tendría el verifier
-    assert decode_oauth_state(query["state"][0]) == user_id
+    assert decode_oauth_state(query["state"][0]) == (user_id, "default")
 
 
 def test_authorize_without_google_configured_is_503(db, monkeypatch):

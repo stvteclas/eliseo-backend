@@ -18,12 +18,13 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.prebuilt import create_react_agent
 
 import math
+import re
 from datetime import datetime, timezone
 
 import mercadopago
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from langchain_core.tools import tool
+from langchain_core.tools import StructuredTool
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -53,14 +54,32 @@ class ToolServerUnavailable(Exception):
     """El servidor MCP no responde (caído o URL mal configurada)."""
 
 
-def build_calendar_tool(user_id: int, db: Session):
+def _account_suffix(account_label: str) -> str:
     """
-    Herramienta de Google Calendar del usuario, armada con SUS credenciales
-    (HU-T11). No es un servidor MCP: cada usuario tiene su propio refresh
-    token, así que la herramienta se construye por usuario. Devuelve None si
-    el usuario no conectó su calendario.
+    Sufijo de nombre de herramienta para una cuenta no-default (HU-T21):
+    "Banco 1" -> "_banco_1". Vacío para "default", así el nombre de la
+    herramienta de la única cuenta de un servicio no cambia (T11/T20 siguen
+    viéndose igual que antes).
     """
-    credential = db.query(GoogleCalendarCredential).filter(GoogleCalendarCredential.user_id == user_id).first()
+    if account_label == "default":
+        return ""
+    slug = re.sub(r"[^a-z0-9]+", "_", account_label.lower()).strip("_")
+    return f"_{slug}" if slug else ""
+
+
+def build_calendar_tool(user_id: int, db: Session, account_label: str = "default"):
+    """
+    Herramienta de Google Calendar de UNA cuenta puntual del usuario, armada
+    con SUS credenciales (HU-T11; varias cuentas por usuario desde HU-T21).
+    No es un servidor MCP: cada cuenta tiene su propio refresh token, así que
+    la herramienta se construye por cuenta. Devuelve None si esa cuenta no
+    está conectada.
+    """
+    credential = (
+        db.query(GoogleCalendarCredential)
+        .filter(GoogleCalendarCredential.user_id == user_id, GoogleCalendarCredential.account_label == account_label)
+        .first()
+    )
     if credential is None:
         return None
 
@@ -73,9 +92,7 @@ def build_calendar_tool(user_id: int, db: Session):
         scopes=["https://www.googleapis.com/auth/calendar.readonly"],
     )
 
-    @tool
     def get_upcoming_calendar_events() -> str:
-        """Devuelve los próximos eventos del calendario de Google del usuario."""
         try:
             service = build("calendar", "v3", credentials=google_credentials, cache_discovery=False)
             result = (
@@ -100,7 +117,15 @@ def build_calendar_tool(user_id: int, db: Session):
             for event in events
         )
 
-    return get_upcoming_calendar_events
+    description = "Devuelve los próximos eventos del calendario de Google del usuario."
+    if account_label != "default":
+        description = f"Devuelve los próximos eventos del calendario de Google de la cuenta '{account_label}'."
+
+    return StructuredTool.from_function(
+        func=get_upcoming_calendar_events,
+        name=f"get_upcoming_calendar_events{_account_suffix(account_label)}",
+        description=description,
+    )
 
 
 def _is_expired(expires_at: datetime | None) -> bool:
@@ -111,27 +136,33 @@ def _is_expired(expires_at: datetime | None) -> bool:
     return datetime.now(timezone.utc) >= expires_at
 
 
-def build_mercadopago_tool(user_id: int, db: Session):
+def build_mercadopago_tool(user_id: int, db: Session, account_label: str = "default"):
     """
-    Herramienta de Mercado Pago del usuario, armada con SU access token
-    (HU-T20): los links de pago cobran a favor de su cuenta. Devuelve None
-    si el usuario no conectó Mercado Pago.
+    Herramienta de Mercado Pago de UNA cuenta puntual del usuario, armada con
+    SU access token (HU-T20; varias cuentas por usuario desde HU-T21): los
+    links de pago cobran a favor de esa cuenta. Devuelve None si esa cuenta
+    no está conectada.
 
     Pendiente a propósito: los access tokens de MP expiran (expires_at). Por
     ahora, si venció, la herramienta pide reconectar; renovarlo solo con el
     refresh_token guardado es una mejora para más adelante.
     """
-    credential = db.query(MercadoPagoCredential).filter(MercadoPagoCredential.user_id == user_id).first()
+    credential = (
+        db.query(MercadoPagoCredential)
+        .filter(MercadoPagoCredential.user_id == user_id, MercadoPagoCredential.account_label == account_label)
+        .first()
+    )
     if credential is None:
         return None
 
     access_token = decrypt(credential.access_token_encrypted)
     expires_at = credential.expires_at
-    reconnect_message = "La conexión con Mercado Pago venció. Hay que volver a conectar la cuenta para crear links de pago."
+    account_note = "" if account_label == "default" else f" de la cuenta '{account_label}'"
+    reconnect_message = (
+        f"La conexión con Mercado Pago{account_note} venció. Hay que volver a conectarla para crear links de pago."
+    )
 
-    @tool
     def create_payment_link(title: str, amount: float, description: str) -> str:
-        """Crea un link de pago de Mercado Pago (en pesos) que cobra a favor del usuario y devuelve la URL."""
         if _is_expired(expires_at):
             return reconnect_message
         if not math.isfinite(amount) or amount <= 0:
@@ -164,13 +195,33 @@ def build_mercadopago_tool(user_id: int, db: Session):
             return reconnect_message
         return "No pude crear el link de pago en este momento."
 
-    return create_payment_link
+    description = f"Crea un link de pago de Mercado Pago (en pesos) que cobra a favor{account_note or ' del usuario'} y devuelve la URL."
+
+    return StructuredTool.from_function(
+        func=create_payment_link,
+        name=f"create_payment_link{_account_suffix(account_label)}",
+        description=description,
+    )
+
+
+# service_name -> función que arma la tool de esa cuenta (HU-T21: multi-cuenta).
+# get_tools_for_user itera todas las filas de UserConnector, no una por
+# servicio: un usuario con 3 conectores "teams_calendar" (HU-T22, cuando
+# exista) termina con 3 tools distintas, una por cuenta.
+ACCOUNT_TOOL_BUILDERS = {
+    "google_calendar": build_calendar_tool,
+    "mercadopago": build_mercadopago_tool,
+}
 
 
 async def get_tools_for_user(user_id: int, db: Session) -> list:
     """Herramientas de los servicios que el usuario conectó: MCP, calendario y pagos (no llama al modelo)."""
-    services = [name for (name,) in db.query(UserConnector.service_name).filter(UserConnector.user_id == user_id)]
-    servers = {name: SERVICE_MCP_REGISTRY[name] for name in services if name in SERVICE_MCP_REGISTRY}
+    connectors = db.query(UserConnector).filter(UserConnector.user_id == user_id).all()
+
+    # Los servidores MCP (ej. "sandbox") no son por cuenta: alcanza con saber
+    # qué service_names están conectados, sin importar cuántas filas haya.
+    service_names = {c.service_name for c in connectors}
+    servers = {name: SERVICE_MCP_REGISTRY[name] for name in service_names if name in SERVICE_MCP_REGISTRY}
 
     tools = []
     if servers:
@@ -180,15 +231,13 @@ async def get_tools_for_user(user_id: int, db: Session) -> list:
         except Exception as exc:  # los errores de conexión llegan como ExceptionGroup
             raise ToolServerUnavailable(", ".join(servers)) from exc
 
-    if "google_calendar" in services:
-        calendar_tool = build_calendar_tool(user_id, db)
-        if calendar_tool is not None:
-            tools.append(calendar_tool)
-
-    if "mercadopago" in services:
-        payment_tool = build_mercadopago_tool(user_id, db)
-        if payment_tool is not None:
-            tools.append(payment_tool)
+    for connector in connectors:
+        build_tool = ACCOUNT_TOOL_BUILDERS.get(connector.service_name)
+        if build_tool is None:
+            continue
+        account_tool = build_tool(user_id, db, connector.account_label)
+        if account_tool is not None:
+            tools.append(account_tool)
 
     return tools
 
