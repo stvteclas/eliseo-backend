@@ -80,6 +80,137 @@ def test_encrypt_without_key_fails_clearly(monkeypatch):
 # --- herramienta del agente
 
 
+class FakeCalendarList:
+    def __init__(self, calendars):
+        self._calendars = calendars
+
+    def list(self, pageToken=None):
+        calendars = self._calendars
+
+        class Exec:
+            def execute(self_inner):
+                return {"items": calendars}
+
+        return Exec()
+
+
+class FakeEventsMultiCalendar:
+    def __init__(self, events_by_calendar, broken_calendars=()):
+        self._events_by_calendar = events_by_calendar
+        self._broken = set(broken_calendars)
+
+    def list(self, calendarId, timeMin=None, maxResults=None, singleEvents=None, orderBy=None):
+        if calendarId in self._broken:
+            raise RuntimeError(f"sin permiso para leer {calendarId}")
+
+        events = self._events_by_calendar.get(calendarId, [])
+
+        class Exec:
+            def execute(self_inner):
+                return {"items": events}
+
+        return Exec()
+
+
+def _fake_multi_calendar_service(calendars, events_by_calendar, broken_calendars=()):
+    class FakeService:
+        def calendarList(self):
+            return FakeCalendarList(calendars)
+
+        def events(self):
+            return FakeEventsMultiCalendar(events_by_calendar, broken_calendars)
+
+    return FakeService()
+
+
+def test_get_upcoming_calendar_events_merges_and_sorts_all_calendars(db, monkeypatch):
+    user_id = _new_user(db)
+    _add_credential(db, user_id)
+
+    calendars = [
+        {"id": "primary", "summary": "pablo@gmail.com", "primary": True},
+        {"id": "es.ar#holiday@group.v.calendar.google.com", "summary": "Cumpleaños"},
+    ]
+    events_by_calendar = {
+        "primary": [{"start": {"dateTime": "2026-09-25T10:00:00-03:00"}, "summary": "Dentista"}],
+        "es.ar#holiday@group.v.calendar.google.com": [
+            {"start": {"dateTime": "2026-09-24T09:00:00-03:00"}, "summary": "Cumple de Juan"}
+        ],
+    }
+    monkeypatch.setattr(
+        "app.agents.orchestrator.build",
+        lambda *a, **k: _fake_multi_calendar_service(calendars, events_by_calendar),
+    )
+
+    tools = {t.name: t for t in build_calendar_tools(user_id, db)}
+    result = tools["get_upcoming_calendar_events"].invoke({})
+
+    lines = result.split("\n")
+    assert len(lines) == 2
+    # Ordenado por fecha: el cumpleaños (24/9) antes que el dentista (25/9).
+    assert "Cumple de Juan" in lines[0]
+    assert "[Cumpleaños]" in lines[0]  # calendario no-primario, se aclara cuál es
+    assert "Dentista" in lines[1]
+    assert "[" not in lines[1]  # el calendario primario no lleva etiqueta
+
+
+def test_get_upcoming_calendar_events_skips_a_broken_calendar(db, monkeypatch):
+    user_id = _new_user(db)
+    _add_credential(db, user_id)
+
+    calendars = [
+        {"id": "primary", "summary": "pablo@gmail.com", "primary": True},
+        {"id": "roto@group.calendar.google.com", "summary": "Sin permiso"},
+    ]
+    events_by_calendar = {
+        "primary": [{"start": {"dateTime": "2026-09-25T10:00:00-03:00"}, "summary": "Dentista"}],
+    }
+    monkeypatch.setattr(
+        "app.agents.orchestrator.build",
+        lambda *a, **k: _fake_multi_calendar_service(
+            calendars, events_by_calendar, broken_calendars={"roto@group.calendar.google.com"}
+        ),
+    )
+
+    tools = {t.name: t for t in build_calendar_tools(user_id, db)}
+    result = tools["get_upcoming_calendar_events"].invoke({})
+
+    assert "Dentista" in result  # el calendario que sí anda no se pierde por el que falla
+
+
+def test_get_upcoming_calendar_events_falls_back_to_primary_when_calendar_list_is_empty(db, monkeypatch):
+    user_id = _new_user(db)
+    _add_credential(db, user_id)
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator.build",
+        lambda *a, **k: _fake_multi_calendar_service(
+            [], {"primary": [{"start": {"dateTime": "2026-09-25T10:00:00-03:00"}, "summary": "Dentista"}]}
+        ),
+    )
+
+    tools = {t.name: t for t in build_calendar_tools(user_id, db)}
+    result = tools["get_upcoming_calendar_events"].invoke({})
+
+    assert "Dentista" in result
+
+
+def test_get_upcoming_calendar_events_no_events_anywhere(db, monkeypatch):
+    user_id = _new_user(db)
+    _add_credential(db, user_id)
+
+    calendars = [{"id": "primary", "summary": "pablo@gmail.com", "primary": True}]
+    monkeypatch.setattr(
+        "app.agents.orchestrator.build",
+        lambda *a, **k: _fake_multi_calendar_service(calendars, {}),
+    )
+
+    tools = {t.name: t for t in build_calendar_tools(user_id, db)}
+    result = tools["get_upcoming_calendar_events"].invoke({})
+
+    assert "No hay eventos" in result
+
+
 def test_build_calendar_tool_without_credential_returns_none(db):
     assert build_calendar_tool(_new_user(db), db) is None
 
@@ -149,7 +280,8 @@ def test_oauth_authorize_requests_events_scope():
     assert response.status_code == 200
     url = response.json()["authorize_url"]
     assert "calendar.events" in url
-    assert "calendar.readonly" not in url
+    # Necesario para leer TODOS los calendarios de la cuenta, no solo "primary".
+    assert "calendar.calendarlist.readonly" in url
 
 
 @pytest.mark.asyncio
@@ -228,7 +360,10 @@ def test_authorize_returns_google_url_with_signed_state(db):
     assert query["client_id"] == ["client-id-de-prueba"]
     assert query["access_type"] == ["offline"]
     assert query["prompt"] == ["consent"]
-    assert query["scope"] == ["https://www.googleapis.com/auth/calendar.events"]
+    assert query["scope"] == [
+        "https://www.googleapis.com/auth/calendar.events "
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+    ]
     assert query["redirect_uri"] == [settings.google_redirect_uri]
     assert "code_challenge" not in query  # sin PKCE: el callback no tendría el verifier
     assert decode_oauth_state(query["state"][0]) == (user_id, "default")

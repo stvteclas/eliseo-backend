@@ -28,6 +28,7 @@ from googleapiclient.discovery import build
 from langchain_core.tools import StructuredTool
 from sqlalchemy.orm import Session
 
+from app.api.routes.google_calendar import GOOGLE_CALENDAR_SCOPES
 from app.core.config import settings
 from app.core.crypto import decrypt
 from app.models.connector import UserConnector
@@ -84,7 +85,6 @@ def _account_suffix(account_label: str) -> str:
     return f"_{slug}" if slug else ""
 
 
-GOOGLE_CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 ARGENTINA_TZ = timezone(timedelta(hours=-3))
 
 
@@ -127,30 +127,61 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
     suffix = _account_suffix(account_label)
     account_note = "" if account_label == "default" else f" de la cuenta '{account_label}'"
 
+    def _list_calendars(service) -> list[tuple[str, str, bool]]:
+        """(calendar_id, nombre, es_primario) de todos los calendarios de la cuenta, con paginación."""
+        calendars = []
+        page_token = None
+        while True:
+            page = service.calendarList().list(pageToken=page_token).execute()
+            for item in page.get("items", []):
+                calendars.append((item["id"], item.get("summary", item["id"]), bool(item.get("primary"))))
+            page_token = page.get("nextPageToken")
+            if not page_token:
+                break
+        return calendars
+
     def get_upcoming_calendar_events() -> str:
         try:
             service = build("calendar", "v3", credentials=google_credentials, cache_discovery=False)
-            result = (
-                service.events()
-                .list(
-                    calendarId="primary",
-                    timeMin=datetime.now(timezone.utc).isoformat(),
-                    maxResults=10,
-                    singleEvents=True,
-                    orderBy="startTime",
-                )
-                .execute()
-            )
+            calendars = _list_calendars(service)
         except Exception:
             return "No pude leer el calendario. Puede que la autorización haya vencido y haya que volver a conectarlo."
 
-        events = result.get("items", [])
-        if not events:
-            return "No hay eventos próximos en el calendario."
-        return "\n".join(
-            f"{event['start'].get('dateTime', event['start'].get('date'))} — {event.get('summary', '(sin título)')}"
-            for event in events
-        )
+        if not calendars:
+            calendars = [("primary", "primary", True)]
+
+        time_min = datetime.now(timezone.utc).isoformat()
+        found = []
+        for calendar_id, calendar_name, is_primary in calendars:
+            try:
+                result = (
+                    service.events()
+                    .list(
+                        calendarId=calendar_id,
+                        timeMin=time_min,
+                        maxResults=10,
+                        singleEvents=True,
+                        orderBy="startTime",
+                    )
+                    .execute()
+                )
+            except Exception:
+                continue  # un calendario puntual con permisos raros no debería tirar abajo el resto
+            for event in result.get("items", []):
+                found.append((event, calendar_name, is_primary))
+
+        if not found:
+            return "No hay eventos próximos en ningún calendario."
+
+        found.sort(key=lambda f: f[0]["start"].get("dateTime", f[0]["start"].get("date", "")))
+
+        lines = []
+        for event, calendar_name, is_primary in found[:10]:
+            when = event["start"].get("dateTime", event["start"].get("date"))
+            title = event.get("summary", "(sin título)")
+            calendar_note = "" if is_primary else f" [{calendar_name}]"
+            lines.append(f"{when} — {title}{calendar_note}")
+        return "\n".join(lines)
 
     def create_calendar_reminder(title: str, when: str, duration_minutes: float = 30) -> str:
         """
@@ -195,14 +226,16 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
             msg += f" {link}"
         return msg
 
-    list_description = "Devuelve los próximos eventos del calendario de Google del usuario."
+    list_description = "Devuelve los próximos eventos de TODOS los calendarios de Google del usuario (no solo el principal)."
     create_description = (
         "Crea un recordatorio/evento en Google Calendar con notificación popup 10 minutos antes. "
         "Pasá title (texto), when en ISO (ej. 2026-09-23T10:00:00, hora Argentina si no hay zona) "
         "y opcionalmente duration_minutes (default 30)."
     )
     if account_label != "default":
-        list_description = f"Devuelve los próximos eventos del calendario de Google de la cuenta '{account_label}'."
+        list_description = (
+            f"Devuelve los próximos eventos de todos los calendarios de Google de la cuenta '{account_label}'."
+        )
         create_description = (
             f"Crea un recordatorio en el calendario de Google de la cuenta '{account_label}' "
             "con aviso popup 10 minutos antes. when en ISO; duration_minutes opcional."

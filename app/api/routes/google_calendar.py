@@ -34,7 +34,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/connectors/google_calendar", tags=["google_calendar"])
 
 SERVICE_NAME = "google_calendar"
-SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+
+# Única fuente de verdad para estos scopes: orchestrator.py los importa de acá
+# para reconstruir las credenciales guardadas. Antes había dos listas
+# separadas (una acá, otra en orchestrator.py) que se desincronizaron: se
+# agregó calendarlist.readonly en una sola, así que el consentimiento nunca
+# llegaba a pedirle a Google ese permiso.
+GOOGLE_CALENDAR_SCOPES = [
+    "https://www.googleapis.com/auth/calendar.events",
+    # Para poder leer TODOS los calendarios de la cuenta (no solo "primary"),
+    # ej. calendarios que el usuario agregó/se suscribió aparte del propio.
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+]
+SCOPES = GOOGLE_CALENDAR_SCOPES
 
 
 
