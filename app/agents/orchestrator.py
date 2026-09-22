@@ -35,6 +35,8 @@ from app.models.google_calendar_credential import GoogleCalendarCredential
 from app.models.mercadopago_credential import MercadoPagoCredential
 from app.models.teams_calendar_credential import TeamsCalendarCredential
 from app.models.user import User
+from app.services.weather import get_weather_report
+
 
 SYSTEM_PROMPT_TEMPLATE = (
     "Sos {name}, un asistente de voz argentino, cálido y directo. "
@@ -294,8 +296,75 @@ ACCOUNT_TOOL_BUILDERS = {
 }
 
 
-async def get_tools_for_user(user_id: int, db: Session) -> list:
-    """Herramientas de los servicios que el usuario conectó: MCP, calendario y pagos (no llama al modelo)."""
+def build_builtin_tools(latitude: float | None = None, longitude: float | None = None) -> list:
+    """
+    Herramientas siempre disponibles (hora y clima), sin conector.
+    Si el request trae GPS, get_weather puede usarlo cuando no pasan ciudad.
+    """
+
+    def get_current_datetime() -> str:
+        # Hora de Argentina (UTC-3 fijo; suficiente para respuestas habladas).
+        now = datetime.now(timezone(timedelta(hours=-3)))
+        weekdays = (
+            "lunes",
+            "martes",
+            "miércoles",
+            "jueves",
+            "viernes",
+            "sábado",
+            "domingo",
+        )
+        months = (
+            "enero",
+            "febrero",
+            "marzo",
+            "abril",
+            "mayo",
+            "junio",
+            "julio",
+            "agosto",
+            "septiembre",
+            "octubre",
+            "noviembre",
+            "diciembre",
+        )
+        return (
+            f"{weekdays[now.weekday()]} {now.day} de {months[now.month - 1]} "
+            f"de {now.year}, {now.hour:02d}:{now.minute:02d} (hora de Argentina)"
+        )
+
+    def get_weather(city: str = "") -> str:
+        """
+        Clima actual. Pasá una ciudad (ej. 'Buenos Aires') o dejá vacío para
+        usar la ubicación GPS del usuario si la app la mandó.
+        """
+        city_arg = city.strip() or None
+        return get_weather_report(city=city_arg, latitude=latitude, longitude=longitude)
+
+    return [
+        StructuredTool.from_function(
+            func=get_current_datetime,
+            name="get_current_datetime",
+            description="Devuelve la fecha y hora actual en Argentina.",
+        ),
+        StructuredTool.from_function(
+            func=get_weather,
+            name="get_weather",
+            description=(
+                "Devuelve el clima actual. Pasá city con el nombre de una ciudad, "
+                "o dejá city vacío para usar la ubicación GPS del usuario si está disponible."
+            ),
+        ),
+    ]
+
+
+async def get_tools_for_user(
+    user_id: int,
+    db: Session,
+    latitude: float | None = None,
+    longitude: float | None = None,
+) -> list:
+    """Herramientas built-in + las de los servicios que el usuario conectó."""
     connectors = db.query(UserConnector).filter(UserConnector.user_id == user_id).all()
 
     # Los servidores MCP (ej. "sandbox") no son por cuenta: alcanza con saber
@@ -303,11 +372,11 @@ async def get_tools_for_user(user_id: int, db: Session) -> list:
     service_names = {c.service_name for c in connectors}
     servers = {name: SERVICE_MCP_REGISTRY[name] for name in service_names if name in SERVICE_MCP_REGISTRY}
 
-    tools = []
+    tools = build_builtin_tools(latitude=latitude, longitude=longitude)
     if servers:
         client = MultiServerMCPClient(servers)
         try:
-            tools = await client.get_tools()
+            tools = tools + await client.get_tools()
         except Exception as exc:  # los errores de conexión llegan como ExceptionGroup
             raise ToolServerUnavailable(", ".join(servers)) from exc
 
@@ -322,8 +391,14 @@ async def get_tools_for_user(user_id: int, db: Session) -> list:
     return tools
 
 
-async def _build_agent(user_id: int, db: Session, persona: str = "elisse"):
-    tools = await get_tools_for_user(user_id, db)
+async def _build_agent(
+    user_id: int,
+    db: Session,
+    persona: str = "elisse",
+    latitude: float | None = None,
+    longitude: float | None = None,
+):
+    tools = await get_tools_for_user(user_id, db, latitude=latitude, longitude=longitude)
 
     model = ChatAnthropic(
         model="claude-sonnet-4-6",
@@ -333,15 +408,23 @@ async def _build_agent(user_id: int, db: Session, persona: str = "elisse"):
     return create_react_agent(model, tools, prompt=system_prompt_for_persona(persona))
 
 
-async def handle_user_message(message: str, user_id: int, db: Session) -> str:
-    """Responde un mensaje usando solo las herramientas que ese usuario conectó."""
+async def handle_user_message(
+    message: str,
+    user_id: int,
+    db: Session,
+    latitude: float | None = None,
+    longitude: float | None = None,
+) -> str:
+    """Responde un mensaje usando herramientas built-in y las que el usuario conectó."""
     if not settings.anthropic_api_key:
         raise RuntimeError("Falta ANTHROPIC_API_KEY en la configuración.")
 
     user = db.query(User).filter(User.id == user_id).first()
     persona = user.persona if user is not None else "elisse"
 
-    agent = await _build_agent(user_id, db, persona=persona)
+    agent = await _build_agent(
+        user_id, db, persona=persona, latitude=latitude, longitude=longitude
+    )
     result = await agent.ainvoke({"messages": [{"role": "user", "content": message}]})
 
     last_message = result["messages"][-1]

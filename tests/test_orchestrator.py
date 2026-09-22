@@ -78,14 +78,15 @@ def sandbox_mcp():
 
 
 @pytest.mark.asyncio
-async def test_user_without_connectors_gets_no_tools(db, monkeypatch):
+async def test_user_without_connectors_gets_builtin_tools_only(db, monkeypatch):
     class FailIfUsed:
         def __init__(self, *args, **kwargs):
             raise AssertionError("Sin conectores no se debería crear ningún cliente MCP.")
 
     monkeypatch.setattr(orchestrator, "MultiServerMCPClient", FailIfUsed)
 
-    assert await get_tools_for_user(_new_user(db), db) == []
+    names = sorted(t.name for t in await get_tools_for_user(_new_user(db), db))
+    assert names == ["get_current_datetime", "get_weather"]
 
 
 @pytest.mark.asyncio
@@ -103,7 +104,8 @@ async def test_connector_not_in_registry_is_ignored(db, monkeypatch):
 
     monkeypatch.setattr(orchestrator, "MultiServerMCPClient", FailIfUsed)
 
-    assert await get_tools_for_user(_new_user(db, "algo_que_no_existe_en_el_registry", "whatsapp"), db) == []
+    names = sorted(t.name for t in await get_tools_for_user(_new_user(db, "algo_que_no_existe_en_el_registry", "whatsapp"), db))
+    assert names == ["get_current_datetime", "get_weather"]
 
 
 @pytest.mark.asyncio
@@ -111,19 +113,24 @@ async def test_tools_are_per_user_and_revocable(db, sandbox_mcp):
     with_sandbox = _new_user(db, "sandbox")
     without = _new_user(db)
 
-    assert await get_tools_for_user(with_sandbox, db)
-    assert await get_tools_for_user(without, db) == []  # no hereda las herramientas de otro usuario
+    with_names = {t.name for t in await get_tools_for_user(with_sandbox, db)}
+    without_names = {t.name for t in await get_tools_for_user(without, db)}
+    assert "get_current_datetime" in with_names
+    assert without_names == {"get_current_datetime", "get_weather"}
 
     db.query(UserConnector).filter(UserConnector.user_id == with_sandbox).delete()
     db.commit()
-    assert await get_tools_for_user(with_sandbox, db) == []  # revocar el conector quita la herramienta
+    revoked = {t.name for t in await get_tools_for_user(with_sandbox, db)}
+    assert revoked == {"get_current_datetime", "get_weather"}
 
 
 def test_chat_passes_authenticated_user_to_orchestrator(monkeypatch):
     received = {}
 
-    async def fake_handle_user_message(message, user_id, db):
-        received.update(message=message, user_id=user_id, db=db)
+    async def fake_handle_user_message(message, user_id, db, latitude=None, longitude=None):
+        received.update(
+            message=message, user_id=user_id, db=db, latitude=latitude, longitude=longitude
+        )
         return "ok"
 
     monkeypatch.setattr("app.api.routes.chat.handle_user_message", fake_handle_user_message)
@@ -134,9 +141,15 @@ def test_chat_passes_authenticated_user_to_orchestrator(monkeypatch):
     user_id = client.post("/auth/register", json={"email": email, "password": password}).json()["id"]
     token = client.post("/auth/login", json={"email": email, "password": password}).json()["access_token"]
 
-    response = client.post("/chat", json={"message": "hola"}, headers={"Authorization": f"Bearer {token}"})
+    response = client.post(
+        "/chat",
+        json={"message": "hola", "latitude": -34.6, "longitude": -58.4},
+        headers={"Authorization": f"Bearer {token}"},
+    )
 
     assert response.status_code == 200
     assert received["user_id"] == user_id
     assert received["message"] == "hola"
+    assert received["latitude"] == -34.6
+    assert received["longitude"] == -58.4
     assert received["db"] is not None

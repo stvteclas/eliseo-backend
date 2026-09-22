@@ -12,6 +12,8 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 class ChatRequest(BaseModel):
     message: str
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 class ChatResponse(BaseModel):
@@ -30,7 +32,13 @@ async def chat(
     algo fijo. Protegido: solo usuarios autenticados.
     """
     try:
-        reply = await handle_user_message(data.message, current_user.id, db)
+        reply = await handle_user_message(
+            data.message,
+            current_user.id,
+            db,
+            latitude=data.latitude,
+            longitude=data.longitude,
+        )
     except ToolServerUnavailable:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

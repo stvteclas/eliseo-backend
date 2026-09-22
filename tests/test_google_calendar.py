@@ -101,7 +101,11 @@ async def test_get_tools_for_user_includes_calendar_tool(db):
 
     tools = await get_tools_for_user(user_id, db)
 
-    assert [t.name for t in tools] == ["get_upcoming_calendar_events"]
+    assert [t.name for t in tools] == [
+        "get_current_datetime",
+        "get_weather",
+        "get_upcoming_calendar_events",
+    ]
 
 
 @pytest.mark.asyncio
@@ -110,7 +114,10 @@ async def test_calendar_connector_without_credential_gives_no_tool(db):
     db.add(UserConnector(user_id=user_id, service_name="google_calendar", scope="read_only"))
     db.commit()
 
-    assert await get_tools_for_user(user_id, db) == []
+    assert sorted(t.name for t in await get_tools_for_user(user_id, db)) == [
+        "get_current_datetime",
+        "get_weather",
+    ]
 
 
 @pytest.mark.asyncio
@@ -120,8 +127,10 @@ async def test_credential_without_connector_gives_no_tool(db):
     db.add(GoogleCalendarCredential(user_id=user_id, refresh_token_encrypted=encrypt("x")))
     db.commit()
 
-    assert await get_tools_for_user(user_id, db) == []
-
+    assert sorted(t.name for t in await get_tools_for_user(user_id, db)) == [
+        "get_current_datetime",
+        "get_weather",
+    ]
 
 # --- state firmado
 

@@ -125,7 +125,12 @@ async def test_get_tools_for_user_returns_one_tool_per_teams_account(db):
 
     tools = await get_tools_for_user(user_id, db)
 
-    assert sorted(t.name for t in tools) == ["get_teams_calendar_events_agencia", "get_teams_calendar_events_banco"]
+    assert sorted(t.name for t in tools) == [
+        "get_current_datetime",
+        "get_teams_calendar_events_agencia",
+        "get_teams_calendar_events_banco",
+        "get_weather",
+    ]
 
 
 # 4. Token vencido -> la tool devuelve un mensaje pidiendo reconectar esa cuenta, no rompe el agente
