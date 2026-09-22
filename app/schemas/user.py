@@ -1,4 +1,8 @@
+from typing import Literal
+
 from pydantic import BaseModel, EmailStr
+
+PersonaName = Literal["eliseo", "elisse"]
 
 
 class UserCreate(BaseModel):
@@ -14,9 +18,14 @@ class UserLogin(BaseModel):
 class UserOut(BaseModel):
     id: int
     email: EmailStr
+    persona: PersonaName = "elisse"
 
     class Config:
         from_attributes = True
+
+
+class PersonaUpdate(BaseModel):
+    persona: PersonaName
 
 
 class Token(BaseModel):

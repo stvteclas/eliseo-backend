@@ -102,6 +102,24 @@ async def test_synthesize_speech_returns_audio_bytes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_synthesize_speech_uses_masculine_voice_for_eliseo(monkeypatch):
+    calls = _mock_post(monkeypatch, FakeResponse(content=b"bytes-mp3"))
+
+    await synthesize_speech("Hola", persona="eliseo")
+
+    assert calls[0]["params"] == {"model": "aura-2-nestor-es"}
+
+
+@pytest.mark.asyncio
+async def test_synthesize_speech_uses_feminine_voice_for_elisse(monkeypatch):
+    calls = _mock_post(monkeypatch, FakeResponse(content=b"bytes-mp3"))
+
+    await synthesize_speech("Hola", persona="elisse")
+
+    assert calls[0]["params"] == {"model": "aura-2-celeste-es"}
+
+
+@pytest.mark.asyncio
 async def test_transcribe_without_deepgram_key_fails_clearly(monkeypatch):
     monkeypatch.setattr(settings, "deepgram_api_key", "")
 
@@ -142,7 +160,7 @@ def test_transcribe_endpoint_returns_the_transcript(monkeypatch):
 
 
 def test_speak_endpoint_returns_audio_mpeg(monkeypatch):
-    _mock_post(monkeypatch, FakeResponse(content=b"bytes-de-audio-mp3"))
+    calls = _mock_post(monkeypatch, FakeResponse(content=b"bytes-de-audio-mp3"))
     headers = _auth_header()
 
     response = client.post("/voice/speak", json={"text": "hola"}, headers=headers)
@@ -150,6 +168,21 @@ def test_speak_endpoint_returns_audio_mpeg(monkeypatch):
     assert response.status_code == 200
     assert response.headers["content-type"] == "audio/mpeg"
     assert response.content == b"bytes-de-audio-mp3"
+    # Usuario nuevo default = elisse → Celeste
+    assert calls[0]["params"] == {"model": "aura-2-celeste-es"}
+
+
+def test_speak_endpoint_uses_user_persona_voice(monkeypatch):
+    calls = _mock_post(monkeypatch, FakeResponse(content=b"bytes-mp3"))
+    headers = _auth_header()
+
+    patched = client.patch("/auth/me", json={"persona": "eliseo"}, headers=headers)
+    assert patched.status_code == 200
+    assert patched.json()["persona"] == "eliseo"
+
+    response = client.post("/voice/speak", json={"text": "hola"}, headers=headers)
+    assert response.status_code == 200
+    assert calls[-1]["params"] == {"model": "aura-2-nestor-es"}
 
 
 def test_transcribe_without_deepgram_configured_is_503(monkeypatch):

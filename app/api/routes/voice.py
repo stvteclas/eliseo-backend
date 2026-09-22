@@ -41,7 +41,7 @@ async def speak(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        audio_bytes = await synthesize_speech(data.text)
+        audio_bytes = await synthesize_speech(data.text, persona=current_user.persona)
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
     return Response(content=audio_bytes, media_type="audio/mpeg")

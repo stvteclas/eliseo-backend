@@ -34,13 +34,24 @@ from app.models.connector import UserConnector
 from app.models.google_calendar_credential import GoogleCalendarCredential
 from app.models.mercadopago_credential import MercadoPagoCredential
 from app.models.teams_calendar_credential import TeamsCalendarCredential
+from app.models.user import User
 
-SYSTEM_PROMPT = (
-    "Sos Eliseo, un asistente de voz argentino, cálido y directo. "
+SYSTEM_PROMPT_TEMPLATE = (
+    "Sos {name}, un asistente de voz argentino, cálido y directo. "
     "Respondé corto, como si estuvieras hablando, no escribiendo un informe. "
     "Solo podés usar las herramientas que tenés disponibles: si te piden algo "
     "para lo que no tenés una herramienta conectada, decilo en vez de inventar la respuesta."
 )
+
+PERSONA_DISPLAY_NAME = {
+    "eliseo": "Eliseo",
+    "elisse": "Elisse",
+}
+
+
+def system_prompt_for_persona(persona: str) -> str:
+    name = PERSONA_DISPLAY_NAME.get(persona, PERSONA_DISPLAY_NAME["elisse"])
+    return SYSTEM_PROMPT_TEMPLATE.format(name=name)
 
 
 # service_name -> config de MultiServerMCPClient. Hoy solo "sandbox"; en
@@ -311,7 +322,7 @@ async def get_tools_for_user(user_id: int, db: Session) -> list:
     return tools
 
 
-async def _build_agent(user_id: int, db: Session):
+async def _build_agent(user_id: int, db: Session, persona: str = "elisse"):
     tools = await get_tools_for_user(user_id, db)
 
     model = ChatAnthropic(
@@ -319,7 +330,7 @@ async def _build_agent(user_id: int, db: Session):
         api_key=settings.anthropic_api_key,
     )
 
-    return create_react_agent(model, tools, prompt=SYSTEM_PROMPT)
+    return create_react_agent(model, tools, prompt=system_prompt_for_persona(persona))
 
 
 async def handle_user_message(message: str, user_id: int, db: Session) -> str:
@@ -327,7 +338,10 @@ async def handle_user_message(message: str, user_id: int, db: Session) -> str:
     if not settings.anthropic_api_key:
         raise RuntimeError("Falta ANTHROPIC_API_KEY en la configuración.")
 
-    agent = await _build_agent(user_id, db)
+    user = db.query(User).filter(User.id == user_id).first()
+    persona = user.persona if user is not None else "elisse"
+
+    agent = await _build_agent(user_id, db, persona=persona)
     result = await agent.ainvoke({"messages": [{"role": "user", "content": message}]})
 
     last_message = result["messages"][-1]

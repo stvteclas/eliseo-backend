@@ -18,4 +18,6 @@ class User(Base):
     id: Mapped[int] = Column(Integer, primary_key=True, index=True)
     email: Mapped[str] = Column(String, unique=True, index=True, nullable=False)
     hashed_password: Mapped[str] = Column(String, nullable=False)
+    # elisse = voz femenina (default); eliseo = voz masculina
+    persona: Mapped[str] = Column(String, nullable=False, default="elisse")
     created_at: Mapped[datetime] = Column(DateTime, default=lambda: datetime.now(timezone.utc))

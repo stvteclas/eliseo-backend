@@ -14,11 +14,22 @@ from app.core.config import settings
 STT_URL = "https://api.deepgram.com/v1/listen"
 TTS_URL = "https://api.deepgram.com/v1/speak"
 
+# Persona del usuario -> modelo TTS de Deepgram (español).
+PERSONA_TTS_MODEL = {
+    "elisse": "aura-2-celeste-es",  # femenina (default)
+    "eliseo": "aura-2-nestor-es",  # masculina
+}
+DEFAULT_PERSONA = "elisse"
+
 
 def _auth_headers() -> dict:
     if not settings.deepgram_api_key:
         raise RuntimeError("Falta DEEPGRAM_API_KEY en la configuración.")
     return {"Authorization": f"Token {settings.deepgram_api_key}"}
+
+
+def tts_model_for_persona(persona: str) -> str:
+    return PERSONA_TTS_MODEL.get(persona, PERSONA_TTS_MODEL[DEFAULT_PERSONA])
 
 
 async def transcribe_audio(audio_bytes: bytes, content_type: str = "audio/mp3") -> str:
@@ -35,12 +46,12 @@ async def transcribe_audio(audio_bytes: bytes, content_type: str = "audio/mp3") 
     return response.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
 
 
-async def synthesize_speech(text: str) -> bytes:
-    """Convierte texto en voz (español, aura-2-celeste-es) con Deepgram. Devuelve el audio en bytes."""
+async def synthesize_speech(text: str, persona: str = DEFAULT_PERSONA) -> bytes:
+    """Convierte texto en voz según la persona del usuario. Devuelve el audio en bytes."""
     async with httpx.AsyncClient() as client:
         response = await client.post(
             TTS_URL,
-            params={"model": "aura-2-celeste-es"},
+            params={"model": tts_model_for_persona(persona)},
             headers={**_auth_headers(), "Content-Type": "application/json"},
             json={"text": text},
             timeout=30,
