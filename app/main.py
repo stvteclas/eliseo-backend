@@ -29,7 +29,7 @@ def _ensure_persona_column() -> None:
     if "persona" in columns:
         return
     with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE users ADD COLUMN persona VARCHAR NOT NULL DEFAULT 'elisse'"))
+        conn.execute(text("ALTER TABLE users ADD COLUMN persona VARCHAR NOT NULL DEFAULT 'eliseo'"))
 
 
 _ensure_persona_column()

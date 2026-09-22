@@ -96,7 +96,7 @@ async def test_synthesize_speech_returns_audio_bytes(monkeypatch):
     assert audio == b"bytes-de-audio-mp3"
     call = calls[0]
     assert call["url"] == "https://api.deepgram.com/v1/speak"
-    assert call["params"] == {"model": "aura-2-celeste-es"}
+    assert call["params"] == {"model": "aura-2-aquila-es"}
     assert call["json"] == {"text": "Son las 12 del mediodía."}
     assert call["headers"]["Authorization"] == "Token deepgram-key-de-prueba"
 
@@ -107,7 +107,7 @@ async def test_synthesize_speech_uses_masculine_voice_for_eliseo(monkeypatch):
 
     await synthesize_speech("Hola", persona="eliseo")
 
-    assert calls[0]["params"] == {"model": "aura-2-nestor-es"}
+    assert calls[0]["params"] == {"model": "aura-2-aquila-es"}
 
 
 @pytest.mark.asyncio
@@ -168,8 +168,8 @@ def test_speak_endpoint_returns_audio_mpeg(monkeypatch):
     assert response.status_code == 200
     assert response.headers["content-type"] == "audio/mpeg"
     assert response.content == b"bytes-de-audio-mp3"
-    # Usuario nuevo default = elisse → Celeste
-    assert calls[0]["params"] == {"model": "aura-2-celeste-es"}
+    # Usuario nuevo default = eliseo → Aquila (latino masculino)
+    assert calls[0]["params"] == {"model": "aura-2-aquila-es"}
 
 
 def test_speak_endpoint_uses_user_persona_voice(monkeypatch):
@@ -182,7 +182,7 @@ def test_speak_endpoint_uses_user_persona_voice(monkeypatch):
 
     response = client.post("/voice/speak", json={"text": "hola"}, headers=headers)
     assert response.status_code == 200
-    assert calls[-1]["params"] == {"model": "aura-2-nestor-es"}
+    assert calls[-1]["params"] == {"model": "aura-2-aquila-es"}
 
 
 def test_transcribe_without_deepgram_configured_is_503(monkeypatch):

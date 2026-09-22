@@ -39,7 +39,7 @@ def test_register_login_and_me():
     assert response.status_code == 200
     body = response.json()
     assert body["email"] == email
-    assert body["persona"] == "elisse"
+    assert body["persona"] == "eliseo"
 
 
 def test_patch_me_updates_persona():

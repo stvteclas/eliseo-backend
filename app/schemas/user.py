@@ -18,7 +18,7 @@ class UserLogin(BaseModel):
 class UserOut(BaseModel):
     id: int
     email: EmailStr
-    persona: PersonaName = "elisse"
+    persona: PersonaName = "eliseo"
 
     class Config:
         from_attributes = True

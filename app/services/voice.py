@@ -16,10 +16,10 @@ TTS_URL = "https://api.deepgram.com/v1/speak"
 
 # Persona del usuario -> modelo TTS de Deepgram (español).
 PERSONA_TTS_MODEL = {
-    "elisse": "aura-2-celeste-es",  # femenina (default)
-    "eliseo": "aura-2-nestor-es",  # masculina
+    "elisse": "aura-2-celeste-es",  # femenina
+    "eliseo": "aura-2-aquila-es",  # masculina, español latino (es-419)
 }
-DEFAULT_PERSONA = "elisse"
+DEFAULT_PERSONA = "eliseo"
 
 
 def _auth_headers() -> dict:
