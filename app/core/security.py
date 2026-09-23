@@ -41,6 +41,7 @@ def decode_access_token(token: str) -> int | None:
 
 
 OAUTH_STATE_EXPIRE_MINUTES = 10
+LOGIN_OAUTH_STATE_EXPIRE_MINUTES = 30
 OAUTH_STATE_PURPOSE = "oauth_state"
 LOGIN_OAUTH_STATE_PURPOSE = "google_login_state"
 
@@ -60,7 +61,7 @@ def create_oauth_state(user_id: int, account_label: str = "default") -> str:
         "sub": str(user_id),
         "purpose": OAUTH_STATE_PURPOSE,
         "account_label": account_label,
-        "exp": expire,
+        "exp": int(expire.timestamp()),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
@@ -76,16 +77,54 @@ def decode_oauth_state(state: str) -> tuple[int, str] | None:
         return None
 
 
-def create_login_oauth_state() -> str:
-    """State firmado para el login con Google (sin user_id todavía)."""
-    expire = datetime.now(timezone.utc) + timedelta(minutes=OAUTH_STATE_EXPIRE_MINUTES)
-    payload = {"purpose": LOGIN_OAUTH_STATE_PURPOSE, "exp": expire}
+def create_login_oauth_state(code_verifier: str | None = None) -> str:
+    """State firmado para el login con Google (incluye code_verifier PKCE)."""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=LOGIN_OAUTH_STATE_EXPIRE_MINUTES)
+    payload = {
+        "purpose": LOGIN_OAUTH_STATE_PURPOSE,
+        "exp": int(expire.timestamp()),
+    }
+    if code_verifier:
+        payload["cv"] = code_verifier
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 
-def decode_login_oauth_state(state: str) -> bool:
+def explain_login_oauth_state(state: str) -> str | None:
+    """
+    None si el state de login es válido.
+    Si no, un motivo corto para mostrar en la página de error.
+    """
+    if not state or not str(state).strip():
+        return "state-vacío"
     try:
-        payload = jwt.decode(state, settings.jwt_secret, algorithms=[ALGORITHM])
-        return payload.get("purpose") == LOGIN_OAUTH_STATE_PURPOSE
-    except (jwt.PyJWTError, KeyError, ValueError):
-        return False
+        payload = jwt.decode(str(state).strip(), settings.jwt_secret, algorithms=[ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        return "state-expirado"
+    except jwt.PyJWTError as exc:
+        return f"state-jwt:{type(exc).__name__}"
+    if payload.get("purpose") != LOGIN_OAUTH_STATE_PURPOSE:
+        return "state-purpose"
+    return None
+
+
+def extract_login_code_verifier(state: str) -> str | None:
+    """Recupera el code_verifier PKCE guardado en el state de login."""
+    if not state:
+        return None
+    try:
+        payload = jwt.decode(
+            str(state).strip(),
+            settings.jwt_secret,
+            algorithms=[ALGORITHM],
+            options={"verify_exp": False},
+        )
+    except jwt.PyJWTError:
+        return None
+    if payload.get("purpose") != LOGIN_OAUTH_STATE_PURPOSE:
+        return None
+    cv = payload.get("cv")
+    return cv if isinstance(cv, str) and cv else None
+
+
+def decode_login_oauth_state(state: str) -> bool:
+    return explain_login_oauth_state(state) is None

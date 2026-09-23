@@ -98,6 +98,8 @@ def test_google_login_authorize_returns_url(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert "accounts.google.com" in body["authorize_url"]
+    assert "code_challenge=" in body["authorize_url"]
+    assert "code_challenge_method=S256" in body["authorize_url"]
     assert body["redirect_uri"] == "https://example.com/auth/google/callback"
 
 

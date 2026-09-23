@@ -21,17 +21,11 @@ def oauth_page(message: str, status_code: int = 200) -> HTMLResponse:
 
 def oauth_failure_page(message: str, exc: Exception | None = None) -> HTMLResponse:
     """
-    Página de error para un callback OAuth cuando algo falla DESPUÉS de que
-    el proveedor ya autorizó (guardar la credencial, escribir el conector).
-    El caller es responsable de loguear la excepción real (logger.exception);
-    acá solo se agrega su texto a la página cuando OAUTH_DEBUG=true, para
-    depurar una falla puntual sin dejarlo prendido en producción.
+    Página de error para un callback OAuth. En prueba mostramos tipo + mensaje
+    corto del error para poder diagnosticar sin mirar logs de Vercel.
     """
     detail = ""
-    if exc is not None and settings.oauth_debug:
-        detail = f" [debug] {type(exc).__name__}: {html_module.escape(str(exc))[:500]}"
-    # En login Google también mostramos un hint corto sin secretos, para
-    # diagnosticar en prueba (token exchange / DB) sin prender OAUTH_DEBUG.
-    elif exc is not None:
-        detail = f" ({html_module.escape(type(exc).__name__)})"
+    if exc is not None:
+        raw = f"{type(exc).__name__}: {exc}"
+        detail = f" [debug] {html_module.escape(raw)[:500]}"
     return oauth_page(message + detail, 400)
