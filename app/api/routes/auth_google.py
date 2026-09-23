@@ -1,0 +1,154 @@
+"""
+Login con Google (OAuth web) separado del conector de Calendar.
+
+  1. GET /auth/google/authorize → URL de Google (openid email profile)
+  2. Callback GET /auth/google/callback → crea/busca usuario → redirige a
+     /auth/google/success?token=JWT para que openAuthSessionAsync lo capture.
+"""
+
+from __future__ import annotations
+
+import logging
+import secrets
+from urllib.parse import urlencode
+
+import httpx
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import HTMLResponse, RedirectResponse
+from google_auth_oauthlib.flow import Flow
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.core.database import SessionLocal
+from app.core.oauth_pages import oauth_page
+from app.core.security import (
+    create_access_token,
+    create_login_oauth_state,
+    decode_login_oauth_state,
+    hash_password,
+)
+from app.models.user import User
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/auth/google", tags=["auth_google"])
+
+LOGIN_SCOPES = [
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+]
+
+GOOGLE_NO_PASSWORD_PREFIX = "google-oauth:"
+
+
+def _login_flow() -> Flow:
+    client_config = {
+        "web": {
+            "client_id": settings.google_client_id,
+            "client_secret": settings.google_client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [settings.google_login_redirect_uri],
+        }
+    }
+    flow = Flow.from_client_config(client_config, scopes=LOGIN_SCOPES)
+    flow.redirect_uri = settings.google_login_redirect_uri
+    return flow
+
+
+def _upsert_google_user(db: Session, email: str) -> User:
+    email_norm = email.strip().lower()
+    user = db.query(User).filter(User.email == email_norm).first()
+    if user is not None:
+        return user
+    user = User(
+        email=email_norm,
+        hashed_password=hash_password(GOOGLE_NO_PASSWORD_PREFIX + secrets.token_urlsafe(24)),
+        persona="eliseo",
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.get("/authorize")
+def authorize_google_login() -> dict:
+    if not settings.google_client_id or not settings.google_client_secret:
+        raise HTTPException(status_code=503, detail="Google OAuth no está configurado.")
+    if not settings.google_login_redirect_uri:
+        raise HTTPException(status_code=503, detail="Falta GOOGLE_LOGIN_REDIRECT_URI.")
+
+    flow = _login_flow()
+    authorize_url, _ = flow.authorization_url(
+        access_type="online",
+        prompt="select_account",
+        state=create_login_oauth_state(),
+    )
+    return {"authorize_url": authorize_url}
+
+
+@router.get("/callback")
+def google_login_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+    if error:
+        return oauth_page("No se autorizó el acceso con Google. Cerrá esta pestaña e intentá de nuevo.", 400)
+    if not code or not state or not decode_login_oauth_state(state):
+        return oauth_page("El enlace de login no es válido o venció. Volvé a intentar desde la app.", 400)
+
+    db = SessionLocal()
+    try:
+        flow = _login_flow()
+        flow.fetch_token(code=code)
+        credentials = flow.credentials
+        with httpx.Client() as client:
+            userinfo = client.get(
+                "https://www.googleapis.com/oauth2/v3/userinfo",
+                headers={"Authorization": f"Bearer {credentials.token}"},
+                timeout=15,
+            )
+            userinfo.raise_for_status()
+            data = userinfo.json()
+        email = (data.get("email") or "").strip()
+        if not email:
+            return oauth_page("Google no devolvió un email. Probá con otra cuenta.", 400)
+
+        user = _upsert_google_user(db, email)
+        token = create_access_token(user.id)
+        # URL que captura openAuthSessionAsync en la app.
+        success = f"{_public_base()}/auth/google/success?{urlencode({'token': token})}"
+        return RedirectResponse(url=success, status_code=302)
+    except Exception:
+        logger.exception("Fallo en callback de login Google")
+        return oauth_page("No se pudo completar el login con Google. Volvé a intentar.", 400)
+    finally:
+        db.close()
+
+
+@router.get("/success")
+def google_login_success(token: str | None = None):
+    """
+    Landing mínima: la app cierra el browser al llegar acá y lee ?token=.
+    También muestra un mensaje por si el usuario abrió el link a mano.
+    """
+    if not token:
+        return oauth_page("Falta el token. Volvé a la app e iniciá sesión otra vez.", 400)
+    html = (
+        "<!doctype html><html><head><meta charset='utf-8'><title>Eliseo</title></head>"
+        "<body style='font-family:sans-serif;padding:2rem'>"
+        "<p>Listo. Ya podés volver a la app.</p>"
+        "</body></html>"
+    )
+    return HTMLResponse(html)
+
+
+def _public_base() -> str:
+    # Deriva el origen del redirect de login (…/auth/google/callback → origen).
+    uri = settings.google_login_redirect_uri.rstrip("/")
+    if uri.endswith("/auth/google/callback"):
+        return uri[: -len("/auth/google/callback")]
+    # fallback: calendar redirect host
+    cal = settings.google_redirect_uri.rstrip("/")
+    if "/connectors/" in cal:
+        return cal.split("/connectors/")[0]
+    return "https://eliseo-backend.vercel.app"

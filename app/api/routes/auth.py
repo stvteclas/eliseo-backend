@@ -6,6 +6,7 @@ from app.core.database import get_db
 from app.core.security import create_access_token, decode_access_token, hash_password, verify_password
 from app.models.user import User
 from app.schemas.user import PersonaUpdate, Token, UserCreate, UserLogin, UserOut
+from app.services.onboarding import get_onboarding_status
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 bearer_scheme = HTTPBearer()
@@ -68,3 +69,12 @@ def update_me(
     db.commit()
     db.refresh(current_user)
     return current_user
+
+
+@router.get("/onboarding")
+def onboarding(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Estado de conexiones del usuario: qué falta (Calendar obligatorio,
+    Mercado Pago / Teams opcionales) y texto guía para que Eliseo lo diga.
+    """
+    return get_onboarding_status(db, current_user.id)

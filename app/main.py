@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from sqlalchemy import inspect, text
 
-from app.api.routes import auth, chat, connectors, google_calendar, health, mercadopago, teams_calendar, voice
+from app.api.routes import auth, auth_google, chat, connectors, google_calendar, health, mercadopago, teams_calendar, voice
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.models import (  # noqa: F401 — necesario para que create_all vea los modelos
@@ -53,6 +53,7 @@ _ensure_translator_columns()
 
 app.include_router(health.router, tags=["health"])
 app.include_router(auth.router)
+app.include_router(auth_google.router)
 app.include_router(chat.router)
 app.include_router(connectors.router)
 app.include_router(google_calendar.router)

@@ -40,6 +40,8 @@ BUILTIN_TOOL_NAMES = [
     "schedule_local_reminder",
     "call_contact",
     "get_daily_briefing",
+    "get_onboarding_status",
+    "start_service_connection",
 ]
 
 
@@ -268,6 +270,38 @@ def build_builtin_tools(
                 parts.append("No pude leer la agenda ahora.")
         return " ".join(parts)
 
+    def get_onboarding_status() -> str:
+        """Dice qué servicios faltan conectar (Calendar, Mercado Pago, Teams)."""
+        if user_id is None or db is None:
+            return "No pude revisar tus conexiones ahora."
+        from app.services.onboarding import get_onboarding_status as status_fn
+
+        return status_fn(db, user_id)["guide"]
+
+    def start_service_connection(service: str = "google_calendar") -> str:
+        """
+        Abre en el teléfono el flujo para conectar un servicio.
+        service: google_calendar | mercadopago | teams_calendar
+        """
+        from app.services.onboarding import ONBOARDING_SERVICES
+
+        key = (service or "google_calendar").strip().lower()
+        spec = next((s for s in ONBOARDING_SERVICES if s["id"] == key), None)
+        if spec is None:
+            return "No conozco ese servicio. Probá google_calendar, mercadopago o teams_calendar."
+        queue_client_action(
+            {
+                "type": "connect_service",
+                "service": spec["id"],
+                "authorize_path": spec["authorize_path"],
+                "label": spec["label"],
+            }
+        )
+        return (
+            f"Te abro la conexión de {spec['label']}. "
+            f"{spec['hint']} Cuando termines en el navegador, volvé y avisame."
+        )
+
     return [
         StructuredTool.from_function(
             func=get_current_datetime,
@@ -370,6 +404,19 @@ def build_builtin_tools(
             description=(
                 "Resumen del día: hora + clima + próximos eventos. "
                 "Usar ante 'buenos días', 'resumen del día', etc."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=get_onboarding_status,
+            name="get_onboarding_status",
+            description="Revisa qué servicios faltan conectar y cómo guiar al usuario.",
+        ),
+        StructuredTool.from_function(
+            func=start_service_connection,
+            name="start_service_connection",
+            description=(
+                "Abre el flujo OAuth en el teléfono para conectar un servicio. "
+                "service=google_calendar (obligatorio), mercadopago o teams_calendar."
             ),
         ),
     ]

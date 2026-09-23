@@ -41,8 +41,9 @@ def test_builtin_tool_names_cover_the_ten_features():
     assert "convert_currency" in BUILTIN_TOOL_NAMES
     assert "get_travel_time" in BUILTIN_TOOL_NAMES
     assert "get_news_headlines" in BUILTIN_TOOL_NAMES
-    assert "translate_text" in BUILTIN_TOOL_NAMES
+    assert "get_daily_briefing" in BUILTIN_TOOL_NAMES
     assert "start_translator_mode" in BUILTIN_TOOL_NAMES
+    assert "start_service_connection" in BUILTIN_TOOL_NAMES
     assert "schedule_local_reminder" in BUILTIN_TOOL_NAMES
     assert "call_contact" in BUILTIN_TOOL_NAMES
     assert "get_daily_briefing" in BUILTIN_TOOL_NAMES

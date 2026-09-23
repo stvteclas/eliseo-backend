@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = "http://localhost:8000/connectors/google_calendar/callback"
+    # Login con Google (scopes openid/email/profile). Hay que agregarlo como
+    # URI autorizada en la misma credencial OAuth web de Google Cloud.
+    google_login_redirect_uri: str = "http://localhost:8000/auth/google/callback"
 
     # Solo para depurar los callbacks OAuth: muestra en la página el error que devolvió
     # el proveedor (Mercado Pago). Dejar en false salvo mientras se investiga una falla.

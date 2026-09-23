@@ -42,6 +42,7 @@ def decode_access_token(token: str) -> int | None:
 
 OAUTH_STATE_EXPIRE_MINUTES = 10
 OAUTH_STATE_PURPOSE = "oauth_state"
+LOGIN_OAUTH_STATE_PURPOSE = "google_login_state"
 
 
 def create_oauth_state(user_id: int, account_label: str = "default") -> str:
@@ -73,3 +74,18 @@ def decode_oauth_state(state: str) -> tuple[int, str] | None:
         return int(payload["sub"]), payload.get("account_label", "default")
     except (jwt.PyJWTError, KeyError, ValueError):
         return None
+
+
+def create_login_oauth_state() -> str:
+    """State firmado para el login con Google (sin user_id todavía)."""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=OAUTH_STATE_EXPIRE_MINUTES)
+    payload = {"purpose": LOGIN_OAUTH_STATE_PURPOSE, "exp": expire}
+    return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
+
+
+def decode_login_oauth_state(state: str) -> bool:
+    try:
+        payload = jwt.decode(state, settings.jwt_secret, algorithms=[ALGORITHM])
+        return payload.get("purpose") == LOGIN_OAUTH_STATE_PURPOSE
+    except (jwt.PyJWTError, KeyError, ValueError):
+        return False
