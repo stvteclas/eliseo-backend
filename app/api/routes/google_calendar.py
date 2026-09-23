@@ -49,15 +49,20 @@ GOOGLE_CALENDAR_SCOPES = [
 SCOPES = GOOGLE_CALENDAR_SCOPES
 
 
+def resolved_google_calendar_redirect_uri() -> str:
+    """Misma URI en authorize y callback; sin espacios ni slash final raro."""
+    return (settings.google_redirect_uri or "").strip().rstrip("/")
+
 
 def _build_flow() -> Flow:
+    redirect_uri = resolved_google_calendar_redirect_uri()
     client_config = {
         "web": {
             "client_id": settings.google_client_id,
             "client_secret": settings.google_client_secret,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [settings.google_redirect_uri],
+            "redirect_uris": [redirect_uri],
         }
     }
     # Sin PKCE: el callback llega en otro request y arma un Flow nuevo, que
@@ -66,7 +71,7 @@ def _build_flow() -> Flow:
     return Flow.from_client_config(
         client_config,
         scopes=SCOPES,
-        redirect_uri=settings.google_redirect_uri,
+        redirect_uri=redirect_uri,
         autogenerate_code_verifier=False,
     )
 
@@ -83,13 +88,19 @@ def authorize(account_label: str = "default", current_user: User = Depends(get_c
     """account_label (HU-T21) distingue esta cuenta de Calendar de otras que el usuario conecte."""
     if not settings.google_client_id or not settings.google_client_secret:
         raise HTTPException(status_code=503, detail="Google Calendar no está configurado en el servidor.")
+    redirect_uri = resolved_google_calendar_redirect_uri()
+    if not redirect_uri or "localhost" in redirect_uri:
+        raise HTTPException(
+            status_code=503,
+            detail=f"GOOGLE_REDIRECT_URI inválida en el servidor: {redirect_uri!r}",
+        )
 
     authorize_url, _ = _build_flow().authorization_url(
         access_type="offline",  # para que Google devuelva un refresh token
         prompt="consent",  # y lo devuelva siempre, aunque el usuario ya haya autorizado antes
         state=create_oauth_state(current_user.id, account_label),
     )
-    return {"authorize_url": authorize_url}
+    return {"authorize_url": authorize_url, "redirect_uri": redirect_uri}
 
 
 @router.get("/callback", response_class=HTMLResponse)

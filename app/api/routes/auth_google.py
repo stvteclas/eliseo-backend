@@ -158,6 +158,29 @@ def authorize_google_login(app_redirect: str | None = Query(default=None)) -> di
     }
 
 
+@router.get("/oauth-uris")
+def google_oauth_uris() -> dict:
+    """
+    URIs exactas que Eliseo manda a Google (para pegarlas en Cloud Console).
+    No expone secretos.
+    """
+    from app.api.routes.google_calendar import resolved_google_calendar_redirect_uri
+
+    client_id = (settings.google_client_id or "").strip()
+    return {
+        "client_id": client_id,
+        "client_id_hint": (client_id[:20] + "…") if len(client_id) > 20 else client_id,
+        "redirect_uris": [
+            resolved_google_login_redirect_uri(),
+            resolved_google_calendar_redirect_uri(),
+        ],
+        "hint": (
+            "En Google Cloud → Credenciales → tu cliente Web, "
+            "agregá EXACTAMENTE estas URIs (sin slash final extra)."
+        ),
+    }
+
+
 @router.get("/callback")
 def google_login_callback(code: str | None = None, state: str | None = None, error: str | None = None):
     if error:
