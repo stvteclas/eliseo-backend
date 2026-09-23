@@ -94,13 +94,25 @@ def test_google_login_authorize_returns_url(monkeypatch):
     monkeypatch.setattr(
         settings, "google_login_redirect_uri", "https://example.com/auth/google/callback"
     )
-    response = client.get("/auth/google/authorize")
+    response = client.get(
+        "/auth/google/authorize",
+        params={"app_redirect": "exp://192.168.1.10:8081/--/auth/google"},
+    )
     assert response.status_code == 200
     body = response.json()
     assert "accounts.google.com" in body["authorize_url"]
     assert "code_challenge=" in body["authorize_url"]
     assert "code_challenge_method=S256" in body["authorize_url"]
     assert body["redirect_uri"] == "https://example.com/auth/google/callback"
+    assert body["app_redirect"] == "exp://192.168.1.10:8081/--/auth/google"
+
+
+def test_safe_app_redirect_rejects_http_open_redirect():
+    from app.api.routes.auth_google import safe_app_redirect
+
+    assert safe_app_redirect("https://evil.example/phish") is None
+    assert safe_app_redirect("eliseo://auth/google") == "eliseo://auth/google"
+    assert safe_app_redirect("exp://127.0.0.1:8081/--/auth/google").startswith("exp://")
 
 
 def test_login_redirect_derives_from_calendar_when_login_is_localhost(monkeypatch):

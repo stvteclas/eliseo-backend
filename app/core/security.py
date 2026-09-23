@@ -77,8 +77,11 @@ def decode_oauth_state(state: str) -> tuple[int, str] | None:
         return None
 
 
-def create_login_oauth_state(code_verifier: str | None = None) -> str:
-    """State firmado para el login con Google (incluye code_verifier PKCE)."""
+def create_login_oauth_state(
+    code_verifier: str | None = None,
+    app_redirect: str | None = None,
+) -> str:
+    """State firmado para el login con Google (PKCE + deep link de la app)."""
     expire = datetime.now(timezone.utc) + timedelta(minutes=LOGIN_OAUTH_STATE_EXPIRE_MINUTES)
     payload = {
         "purpose": LOGIN_OAUTH_STATE_PURPOSE,
@@ -86,6 +89,8 @@ def create_login_oauth_state(code_verifier: str | None = None) -> str:
     }
     if code_verifier:
         payload["cv"] = code_verifier
+    if app_redirect:
+        payload["ar"] = app_redirect
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 
@@ -107,8 +112,7 @@ def explain_login_oauth_state(state: str) -> str | None:
     return None
 
 
-def extract_login_code_verifier(state: str) -> str | None:
-    """Recupera el code_verifier PKCE guardado en el state de login."""
+def _login_state_payload(state: str) -> dict | None:
     if not state:
         return None
     try:
@@ -122,8 +126,25 @@ def extract_login_code_verifier(state: str) -> str | None:
         return None
     if payload.get("purpose") != LOGIN_OAUTH_STATE_PURPOSE:
         return None
+    return payload
+
+
+def extract_login_code_verifier(state: str) -> str | None:
+    """Recupera el code_verifier PKCE guardado en el state de login."""
+    payload = _login_state_payload(state)
+    if not payload:
+        return None
     cv = payload.get("cv")
     return cv if isinstance(cv, str) and cv else None
+
+
+def extract_login_app_redirect(state: str) -> str | None:
+    """Deep link de la app para cerrar openAuthSessionAsync tras el login."""
+    payload = _login_state_payload(state)
+    if not payload:
+        return None
+    ar = payload.get("ar")
+    return ar if isinstance(ar, str) and ar else None
 
 
 def decode_login_oauth_state(state: str) -> bool:

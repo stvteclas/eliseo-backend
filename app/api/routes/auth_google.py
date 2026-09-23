@@ -12,10 +12,10 @@ import base64
 import hashlib
 import logging
 import secrets
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -26,6 +26,7 @@ from app.core.security import (
     create_access_token,
     create_login_oauth_state,
     explain_login_oauth_state,
+    extract_login_app_redirect,
     extract_login_code_verifier,
     hash_password,
 )
@@ -70,6 +71,29 @@ def _pkce_pair() -> tuple[str, str]:
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     return verifier, challenge
+
+
+def safe_app_redirect(url: str | None) -> str | None:
+    """
+    Solo deep links de la app (exp/eliseo) o proxy de Expo Auth.
+    Evita open-redirect hacia dominios arbitrarios.
+    """
+    if not url or not str(url).strip():
+        return None
+    raw = str(url).strip()
+    if len(raw) > 512:
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme in {"exp", "exps", "eliseo"}:
+        return raw
+    if parsed.scheme == "https" and parsed.netloc == "auth.expo.io":
+        return raw
+    return None
+
+
+def _app_success_url(app_redirect: str, token: str) -> str:
+    sep = "&" if "?" in app_redirect else "?"
+    return f"{app_redirect}{sep}{urlencode({'token': token})}"
 
 
 def _exchange_code_for_access_token(code: str, code_verifier: str | None = None) -> str:
@@ -128,7 +152,7 @@ def _upsert_google_user(db: Session, email: str) -> User:
 
 
 @router.get("/authorize")
-def authorize_google_login() -> dict:
+def authorize_google_login(app_redirect: str | None = Query(default=None)) -> dict:
     if not settings.google_client_id or not settings.google_client_secret:
         raise HTTPException(status_code=503, detail="Google OAuth no está configurado.")
     redirect_uri = resolved_google_login_redirect_uri()
@@ -136,7 +160,8 @@ def authorize_google_login() -> dict:
         raise HTTPException(status_code=503, detail="Falta GOOGLE_LOGIN_REDIRECT_URI.")
 
     verifier, challenge = _pkce_pair()
-    state = create_login_oauth_state(code_verifier=verifier)
+    app_return = safe_app_redirect(app_redirect)
+    state = create_login_oauth_state(code_verifier=verifier, app_redirect=app_return)
     params = {
         "client_id": settings.google_client_id,
         "redirect_uri": redirect_uri,
@@ -151,6 +176,7 @@ def authorize_google_login() -> dict:
     return {
         "authorize_url": f"{AUTH_URL}?{urlencode(params)}",
         "redirect_uri": redirect_uri,
+        "app_redirect": app_return,
     }
 
 
@@ -183,6 +209,10 @@ def google_login_callback(code: str | None = None, state: str | None = None, err
     try:
         user = _upsert_google_user(db, email)
         token = create_access_token(user.id)
+        app_return = safe_app_redirect(extract_login_app_redirect(state or ""))
+        if app_return:
+            # Deep link: openAuthSessionAsync cierra el browser al ver esta URL.
+            return RedirectResponse(url=_app_success_url(app_return, token), status_code=302)
         success = f"{_public_base()}/auth/google/success?{urlencode({'token': token})}"
         return RedirectResponse(url=success, status_code=302)
     except Exception as exc:
@@ -193,14 +223,25 @@ def google_login_callback(code: str | None = None, state: str | None = None, err
 
 
 @router.get("/success")
-def google_login_success(token: str | None = None):
+def google_login_success(token: str | None = None, app: str | None = None):
     if not token:
         return oauth_page("Falta el token. Volvé a la app e iniciá sesión otra vez.", 400)
+    app_return = safe_app_redirect(app)
+    deep = _app_success_url(app_return, token) if app_return else ""
+    deep_js = deep.replace("\\", "\\\\").replace("'", "\\'")
     html = (
-        "<!doctype html><html><head><meta charset='utf-8'><title>Eliseo</title></head>"
+        "<!doctype html><html><head><meta charset='utf-8'><title>Eliseo</title>"
+        f"{f'<meta http-equiv=\"refresh\" content=\"0;url={deep}\">' if deep else ''}"
+        "</head>"
         "<body style='font-family:sans-serif;padding:2rem'>"
-        "<p>Listo. Ya podés volver a la app.</p>"
-        "</body></html>"
+        "<p>Listo. Volviendo a la app…</p>"
+        + (
+            f"<p><a href='{deep}'>Tocá acá si no vuelve sola</a></p>"
+            f"<script>try{{window.location.replace('{deep_js}');}}catch(e){{}}</script>"
+            if deep
+            else "<p>Cerrá esta ventana y volvé a Eliseo.</p>"
+        )
+        + "</body></html>"
     )
     return HTMLResponse(html)
 
