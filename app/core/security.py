@@ -46,7 +46,11 @@ OAUTH_STATE_PURPOSE = "oauth_state"
 LOGIN_OAUTH_STATE_PURPOSE = "google_login_state"
 
 
-def create_oauth_state(user_id: int, account_label: str = "default") -> str:
+def create_oauth_state(
+    user_id: int,
+    account_label: str = "default",
+    app_redirect: str | None = None,
+) -> str:
     """
     Parámetro `state` del flujo OAuth: firmado y de vida corta. Va en una URL
     (historial, logs), así que NO es el access token del usuario: lleva un
@@ -63,6 +67,8 @@ def create_oauth_state(user_id: int, account_label: str = "default") -> str:
         "account_label": account_label,
         "exp": int(expire.timestamp()),
     }
+    if app_redirect:
+        payload["ar"] = app_redirect
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 
@@ -75,6 +81,25 @@ def decode_oauth_state(state: str) -> tuple[int, str] | None:
         return int(payload["sub"]), payload.get("account_label", "default")
     except (jwt.PyJWTError, KeyError, ValueError):
         return None
+
+
+def extract_oauth_app_redirect(state: str) -> str | None:
+    """Deep link de la app guardado en el state OAuth de conectores."""
+    if not state:
+        return None
+    try:
+        payload = jwt.decode(
+            str(state).strip(),
+            settings.jwt_secret,
+            algorithms=[ALGORITHM],
+            options={"verify_exp": False},
+        )
+    except jwt.PyJWTError:
+        return None
+    if payload.get("purpose") != OAUTH_STATE_PURPOSE:
+        return None
+    ar = payload.get("ar")
+    return ar if isinstance(ar, str) and ar else None
 
 
 def create_login_oauth_state(

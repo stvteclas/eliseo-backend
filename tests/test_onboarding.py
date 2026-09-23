@@ -108,7 +108,7 @@ def test_google_login_authorize_returns_url(monkeypatch):
 
 
 def test_safe_app_redirect_rejects_http_open_redirect():
-    from app.api.routes.auth_google import safe_app_redirect
+    from app.core.oauth_redirect import safe_app_redirect
 
     assert safe_app_redirect("https://evil.example/phish") is None
     assert safe_app_redirect("eliseo://auth/google") == "eliseo://auth/google"

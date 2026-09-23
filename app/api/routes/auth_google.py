@@ -12,7 +12,7 @@ import base64
 import hashlib
 import logging
 import secrets
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.oauth_pages import oauth_failure_page, oauth_page
+from app.core.oauth_redirect import safe_app_redirect, with_query
 from app.core.security import (
     create_access_token,
     create_login_oauth_state,
@@ -71,29 +72,6 @@ def _pkce_pair() -> tuple[str, str]:
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     return verifier, challenge
-
-
-def safe_app_redirect(url: str | None) -> str | None:
-    """
-    Solo deep links de la app (exp/eliseo) o proxy de Expo Auth.
-    Evita open-redirect hacia dominios arbitrarios.
-    """
-    if not url or not str(url).strip():
-        return None
-    raw = str(url).strip()
-    if len(raw) > 512:
-        return None
-    parsed = urlparse(raw)
-    if parsed.scheme in {"exp", "exps", "eliseo"}:
-        return raw
-    if parsed.scheme == "https" and parsed.netloc == "auth.expo.io":
-        return raw
-    return None
-
-
-def _app_success_url(app_redirect: str, token: str) -> str:
-    sep = "&" if "?" in app_redirect else "?"
-    return f"{app_redirect}{sep}{urlencode({'token': token})}"
 
 
 def _exchange_code_for_access_token(code: str, code_verifier: str | None = None) -> str:
@@ -212,7 +190,7 @@ def google_login_callback(code: str | None = None, state: str | None = None, err
         app_return = safe_app_redirect(extract_login_app_redirect(state or ""))
         if app_return:
             # Deep link: openAuthSessionAsync cierra el browser al ver esta URL.
-            return RedirectResponse(url=_app_success_url(app_return, token), status_code=302)
+            return RedirectResponse(url=with_query(app_return, token=token), status_code=302)
         success = f"{_public_base()}/auth/google/success?{urlencode({'token': token})}"
         return RedirectResponse(url=success, status_code=302)
     except Exception as exc:
@@ -227,7 +205,7 @@ def google_login_success(token: str | None = None, app: str | None = None):
     if not token:
         return oauth_page("Falta el token. Volvé a la app e iniciá sesión otra vez.", 400)
     app_return = safe_app_redirect(app)
-    deep = _app_success_url(app_return, token) if app_return else ""
+    deep = with_query(app_return, token=token) if app_return else ""
     deep_js = deep.replace("\\", "\\\\").replace("'", "\\'")
     html = (
         "<!doctype html><html><head><meta charset='utf-8'><title>Eliseo</title>"
