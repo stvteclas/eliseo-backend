@@ -2,7 +2,8 @@
 Herramientas built-in siempre disponibles (sin conector OAuth).
 
 Incluye hora/clima, notas, cálculo, viaje, noticias, traducción,
-acciones del teléfono (timer, push local, llamar) y resumen del día.
+acciones del teléfono (timer, push local, llamar), resumen del día
+y material de estudio.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from app.agents.client_actions import queue_client_action
 from app.services import calculator as calculator_service
 from app.services import news as news_service
 from app.services import notes as notes_service
+from app.services import study as study_service
 from app.services import traffic as traffic_service
 from app.services import translate as translate_service
 from app.services.weather import get_weather_report
@@ -40,6 +42,7 @@ BUILTIN_TOOL_NAMES = [
     "schedule_local_reminder",
     "call_contact",
     "get_daily_briefing",
+    "make_study_summary",
     "get_onboarding_status",
     "start_service_connection",
 ]
@@ -271,6 +274,14 @@ def build_builtin_tools(
                 parts.append("No pude leer la agenda ahora.")
         return " ".join(parts)
 
+    def make_study_summary(material: str, mode: str = "resumen", depth: str = "medio") -> str:
+        """
+        Arma material de estudio a partir de un tema o de un texto dictado.
+        mode: resumen | esquema | fichas | examen
+        depth: corto | medio | detallado
+        """
+        return study_service.make_study_summary(material=material, mode=mode, depth=depth)
+
     def get_onboarding_status() -> str:
         """Dice qué servicios faltan conectar (Calendar, Mercado Pago, Teams)."""
         if user_id is None or db is None:
@@ -406,6 +417,17 @@ def build_builtin_tools(
             description=(
                 "Resumen del día: hora + clima + próximos eventos. "
                 "Usar ante 'buenos días', 'resumen del día', etc."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=make_study_summary,
+            name="make_study_summary",
+            description=(
+                "Arma resúmenes de estudio, esquemas, fichas o un mini examen. "
+                "Pasá material=tema o texto dictado. "
+                "mode=resumen|esquema|fichas|examen. depth=corto|medio|detallado. "
+                "Usar ante 'haceme un resumen de estudio', 'explicame para rendir', "
+                "'armame fichas', 'preguntame de este tema'."
             ),
         ),
         StructuredTool.from_function(

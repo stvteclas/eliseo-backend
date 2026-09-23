@@ -42,6 +42,7 @@ def test_builtin_tool_names_cover_the_ten_features():
     assert "get_travel_time" in BUILTIN_TOOL_NAMES
     assert "get_news_headlines" in BUILTIN_TOOL_NAMES
     assert "get_daily_briefing" in BUILTIN_TOOL_NAMES
+    assert "make_study_summary" in BUILTIN_TOOL_NAMES
     assert "start_translator_mode" in BUILTIN_TOOL_NAMES
     assert "start_service_connection" in BUILTIN_TOOL_NAMES
     assert "schedule_local_reminder" in BUILTIN_TOOL_NAMES
@@ -218,3 +219,30 @@ def test_travel_time_falls_back_to_osrm(monkeypatch):
     )
     assert "15 minutos" in report
     assert "sin el tráfico en vivo" in report
+
+
+def test_make_study_summary_uses_llm(monkeypatch):
+    from app.services import study as study_service
+
+    monkeypatch.setattr(study_service.settings, "anthropic_api_key", "test-key")
+
+    class FakeLLM:
+        def invoke(self, messages):
+            class R:
+                content = (
+                    "Idea central: la fotosíntesis convierte luz en energía. "
+                    "Puntos clave: uno, necesita clorofila."
+                )
+
+            return R()
+
+    monkeypatch.setattr(study_service, "ChatAnthropic", lambda **kwargs: FakeLLM())
+    text = study_service.make_study_summary("fotosíntesis", mode="resumen", depth="corto")
+    assert "fotosíntesis" in text.lower() or "Idea central" in text
+
+
+def test_make_study_summary_requires_material(monkeypatch):
+    from app.services import study as study_service
+
+    monkeypatch.setattr(study_service.settings, "anthropic_api_key", "test-key")
+    assert "tema" in study_service.make_study_summary("").lower()
