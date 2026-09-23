@@ -13,7 +13,7 @@ ONBOARDING_SERVICES: list[dict] = [
         "label": "Google Calendar",
         "required": True,
         "authorize_path": "/connectors/google_calendar/authorize",
-        "hint": "Para ver tu agenda y crear recordatorios.",
+        "hint": "Para agenda, recordatorios y leer tus mails de Gmail.",
     },
     {
         "id": "mercadopago",

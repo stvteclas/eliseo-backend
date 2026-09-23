@@ -38,6 +38,7 @@ from app.models.teams_calendar_credential import TeamsCalendarCredential
 from app.models.user import User
 from app.agents.builtin_tools import build_builtin_tools  # noqa: F401 — reexport / uso en get_tools
 from app.agents.client_actions import drain_client_actions, reset_client_actions
+from app.services import gmail as gmail_service
 
 
 SYSTEM_PROMPT_TEMPLATE = (
@@ -46,7 +47,7 @@ SYSTEM_PROMPT_TEMPLATE = (
     "Nunca uses emojis, emoticones ni sus nombres (nada de blush, smile, etc.): "
     "solo texto hablable. "
     "Las herramientas son para datos o acciones externas "
-    "(clima, hora, calendario, pagos, notas, cálculos, tráfico, viaje, "
+    "(clima, hora, calendario, mails, pagos, notas, cálculos, tráfico, viaje, "
     "noticias, traducción, modo traductor, temporizador, avisos, contactos, "
     "resumen del día, resúmenes de estudio, música, conexiones de servicios). "
     "Si preguntan por tráfico, demora, cuánto tardan o cómo está el camino "
@@ -54,6 +55,8 @@ SYSTEM_PROMPT_TEMPLATE = (
     "Si piden estudiar, resumir para un examen, fichas o que los pregunte "
     "sobre un tema o un texto, usá make_study_summary. "
     "Si piden poner una canción o abrir Spotify / YouTube Music, usá play_music. "
+    "Si piden leer el correo, mails o bandeja de entrada, usá get_recent_emails "
+    "o read_email (hace falta haber reconectado Google con permiso de Gmail). "
     "Si el usuario aún no conectó Google Calendar u otro servicio, "
     "usá get_onboarding_status y start_service_connection para guiarlo paso a paso. "
     "Calendar es obligatorio antes de hablar de agenda o recordatorios. "
@@ -242,11 +245,42 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
             msg += f" {link}"
         return msg
 
+    def get_recent_emails(limit: float = 5, query: str = "") -> str:
+        """
+        Lee mails recientes de Gmail. query opcional (sintaxis Gmail:
+        'is:unread', 'from:ana', 'newer_than:2d'). Default: bandeja de entrada.
+        """
+        return gmail_service.list_recent_emails(
+            google_credentials,
+            limit=int(limit or 5),
+            query=query or "",
+        )
+
+    def read_email(search: str = "", message_id: str = "") -> str:
+        """
+        Lee el contenido de un mail. Pasá search (ej. 'from:banco is:unread')
+        o message_id si lo conocés.
+        """
+        return gmail_service.read_email(
+            google_credentials,
+            message_id=message_id or "",
+            search=search or "",
+        )
+
     list_description = "Devuelve los próximos eventos de TODOS los calendarios de Google del usuario (no solo el principal)."
     create_description = (
         "Crea un recordatorio/evento en Google Calendar con notificación popup 10 minutos antes. "
         "Pasá title (texto), when en ISO (ej. 2026-09-23T10:00:00, hora Argentina si no hay zona) "
         "y opcionalmente duration_minutes (default 30)."
+    )
+    mail_list_description = (
+        "Lee mails recientes de Gmail (asunto, de quién, adelanto). "
+        "Usar ante 'leé mis mails', 'qué hay en el correo', 'mails sin leer'. "
+        "query opcional con sintaxis Gmail; limit default 5."
+    )
+    mail_read_description = (
+        "Lee el contenido de un mail concreto. Pasá search (ej. from:ana asunto) "
+        "o message_id. Usar cuando piden 'leé el mail de…' o el detalle de uno."
     )
     if account_label != "default":
         list_description = (
@@ -256,6 +290,8 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
             f"Crea un recordatorio en el calendario de Google de la cuenta '{account_label}' "
             "con aviso popup 10 minutos antes. when en ISO; duration_minutes opcional."
         )
+        mail_list_description = f"Lee mails recientes de Gmail de la cuenta '{account_label}'."
+        mail_read_description = f"Lee un mail de Gmail de la cuenta '{account_label}'."
 
     return [
         StructuredTool.from_function(
@@ -267,6 +303,16 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
             func=create_calendar_reminder,
             name=f"create_calendar_reminder{suffix}",
             description=create_description,
+        ),
+        StructuredTool.from_function(
+            func=get_recent_emails,
+            name=f"get_recent_emails{suffix}",
+            description=mail_list_description,
+        ),
+        StructuredTool.from_function(
+            func=read_email,
+            name=f"read_email{suffix}",
+            description=mail_read_description,
         ),
     ]
 

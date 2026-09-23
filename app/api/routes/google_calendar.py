@@ -46,6 +46,8 @@ GOOGLE_CALENDAR_SCOPES = [
     # Para poder leer TODOS los calendarios de la cuenta (no solo "primary"),
     # ej. calendarios que el usuario agregó/se suscribió aparte del propio.
     "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+    # Lectura de correo (misma reconexión OAuth; hace falta Gmail API en Cloud).
+    "https://www.googleapis.com/auth/gmail.readonly",
 ]
 SCOPES = GOOGLE_CALENDAR_SCOPES
 
