@@ -89,10 +89,12 @@ def authorize(account_label: str = "default", current_user: User = Depends(get_c
     if not settings.google_client_id or not settings.google_client_secret:
         raise HTTPException(status_code=503, detail="Google Calendar no está configurado en el servidor.")
     redirect_uri = resolved_google_calendar_redirect_uri()
-    if not redirect_uri or "localhost" in redirect_uri:
+    if not redirect_uri:
+        raise HTTPException(status_code=503, detail="Falta GOOGLE_REDIRECT_URI.")
+    if settings.env == "production" and "localhost" in redirect_uri:
         raise HTTPException(
             status_code=503,
-            detail=f"GOOGLE_REDIRECT_URI inválida en el servidor: {redirect_uri!r}",
+            detail=f"GOOGLE_REDIRECT_URI inválida en producción: {redirect_uri!r}",
         )
 
     authorize_url, _ = _build_flow().authorization_url(
