@@ -473,7 +473,8 @@ async def _build_agent(
     tools = await get_tools_for_user(user_id, db, latitude=latitude, longitude=longitude)
 
     model = ChatAnthropic(
-        model="claude-sonnet-4-6",
+        # Haiku: mucho más rápido para charla por voz (sonnet ~10–20s extra).
+        model="claude-haiku-4-5",
         api_key=settings.anthropic_api_key,
     )
 

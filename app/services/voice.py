@@ -171,19 +171,22 @@ async def transcribe_audio(
             langs.append(c)
 
     if len(langs) >= 2:
+        import asyncio
+
+        gathered = await asyncio.gather(
+            *[
+                _listen_once(audio_bytes, content_type, language=lang, detect_language=False)
+                for lang in langs
+            ],
+            return_exceptions=True,
+        )
         best: TranscriptResult | None = None
-        for lang in langs:
-            try:
-                result = await _listen_once(
-                    audio_bytes, content_type, language=lang, detect_language=False
-                )
-            except Exception:
+        for lang, item in zip(langs, gathered):
+            if isinstance(item, Exception) or not item.transcript:
                 continue
-            if not result.transcript:
-                continue
-            result.language = lang
-            if best is None or result.confidence > best.confidence:
-                best = result
+            item.language = lang
+            if best is None or item.confidence > best.confidence:
+                best = item
         if best is not None:
             return best
         # fallback: detección automática

@@ -210,3 +210,24 @@ def test_speak_without_deepgram_configured_is_503(monkeypatch):
     headers = _auth_header()
 
     assert client.post("/voice/speak", json={"text": "hola"}, headers=headers).status_code == 503
+
+
+def test_voice_turn_requires_login():
+    response = client.post("/voice/turn", files={"audio": ("audio.wav", b"x", "audio/wav")})
+    assert response.status_code in (401, 403)
+
+
+def test_voice_turn_empty_transcript_skips_chat(monkeypatch):
+    empty_body = {"results": {"channels": [{"alternatives": [{"transcript": ""}]}]}}
+    _mock_post(monkeypatch, FakeResponse(json_data=empty_body))
+    headers = _auth_header()
+
+    response = client.post(
+        "/voice/turn", files={"audio": ("audio.wav", b"bytes", "audio/wav")}, headers=headers
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["transcript"] == ""
+    assert data["reply"] == ""
+    assert data["audio_base64"] == ""
