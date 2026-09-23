@@ -284,6 +284,7 @@ def test_oauth_authorize_requests_events_scope():
     # Necesario para leer TODOS los calendarios de la cuenta, no solo "primary".
     assert "calendar.calendarlist.readonly" in url
     assert "gmail.readonly" in url
+    assert "gmail.send" in url
 
 
 @pytest.mark.asyncio
@@ -299,6 +300,7 @@ async def test_get_tools_for_user_includes_calendar_tool(db):
     assert "create_calendar_reminder" in names
     assert "get_recent_emails" in names
     assert "read_email" in names
+    assert "send_email" in names
 
 
 @pytest.mark.asyncio
@@ -359,7 +361,8 @@ def test_authorize_returns_google_url_with_signed_state(db):
     assert query["scope"] == [
         "https://www.googleapis.com/auth/calendar.events "
         "https://www.googleapis.com/auth/calendar.calendarlist.readonly "
-        "https://www.googleapis.com/auth/gmail.readonly"
+        "https://www.googleapis.com/auth/gmail.readonly "
+        "https://www.googleapis.com/auth/gmail.send"
     ]
     assert query["redirect_uri"] == [settings.google_redirect_uri]
     assert "code_challenge" not in query  # sin PKCE: el callback no tendría el verifier

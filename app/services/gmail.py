@@ -189,3 +189,36 @@ def read_email(
     body = body[:1200]
     when_bit = f" el {when}" if when else ""
     return f"Mail de {sender}{when_bit}. Asunto: {subject}. Contenido: {body}"
+
+
+def send_email(
+    credentials: Credentials,
+    to: str,
+    subject: str,
+    body: str,
+) -> str:
+    """Envía un mail en texto plano desde la cuenta conectada."""
+    from email.mime.text import MIMEText
+
+    dest = (to or "").strip()
+    subj = (subject or "").strip() or "(sin asunto)"
+    text = (body or "").strip()
+    if not dest or "@" not in dest:
+        return "Necesito un destinatario con email válido."
+    if not text:
+        return "Decime qué querés que diga el mail."
+
+    try:
+        message = MIMEText(text[:8000], _charset="utf-8")
+        message["to"] = dest
+        message["subject"] = subj[:200]
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+        service = _gmail_service(credentials)
+        service.users().messages().send(userId="me", body={"raw": raw}).execute()
+    except Exception:
+        logger.exception("Gmail send falló")
+        return (
+            "No pude enviar el mail. Reconectá Google Calendar aceptando permiso "
+            "de Gmail (enviar) y revisá que Gmail API esté habilitada."
+        )
+    return f"Listo, mandé el mail a {dest} con asunto «{subj}»."

@@ -56,7 +56,8 @@ SYSTEM_PROMPT_TEMPLATE = (
     "sobre un tema o un texto, usá make_study_summary. "
     "Si piden poner una canción o abrir Spotify / YouTube Music, usá play_music. "
     "Si piden leer el correo, mails o bandeja de entrada, usá get_recent_emails "
-    "o read_email (hace falta haber reconectado Google con permiso de Gmail). "
+    "o read_email; si piden mandar un mail, usá send_email "
+    "(hace falta haber reconectado Google con permiso de Gmail). "
     "Si el usuario aún no conectó Google Calendar u otro servicio, "
     "usá get_onboarding_status y start_service_connection para guiarlo paso a paso. "
     "Calendar es obligatorio antes de hablar de agenda o recordatorios. "
@@ -267,6 +268,17 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
             search=search or "",
         )
 
+    def send_email(to: str, subject: str, body: str) -> str:
+        """
+        Envía un mail. to=email del destinatario, subject=asunto, body=texto.
+        """
+        return gmail_service.send_email(
+            google_credentials,
+            to=to,
+            subject=subject,
+            body=body,
+        )
+
     list_description = "Devuelve los próximos eventos de TODOS los calendarios de Google del usuario (no solo el principal)."
     create_description = (
         "Crea un recordatorio/evento en Google Calendar con notificación popup 10 minutos antes. "
@@ -282,6 +294,10 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
         "Lee el contenido de un mail concreto. Pasá search (ej. from:ana asunto) "
         "o message_id. Usar cuando piden 'leé el mail de…' o el detalle de uno."
     )
+    mail_send_description = (
+        "Envía un mail desde Gmail del usuario. to=dirección, subject=asunto, body=mensaje. "
+        "Usar ante 'mandale un mail a…', 'escribile un correo a…'."
+    )
     if account_label != "default":
         list_description = (
             f"Devuelve los próximos eventos de todos los calendarios de Google de la cuenta '{account_label}'."
@@ -292,6 +308,7 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
         )
         mail_list_description = f"Lee mails recientes de Gmail de la cuenta '{account_label}'."
         mail_read_description = f"Lee un mail de Gmail de la cuenta '{account_label}'."
+        mail_send_description = f"Envía un mail desde Gmail de la cuenta '{account_label}'."
 
     return [
         StructuredTool.from_function(
@@ -313,6 +330,11 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
             func=read_email,
             name=f"read_email{suffix}",
             description=mail_read_description,
+        ),
+        StructuredTool.from_function(
+            func=send_email,
+            name=f"send_email{suffix}",
+            description=mail_send_description,
         ),
     ]
 
