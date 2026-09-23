@@ -5,6 +5,7 @@ que en local se leen desde el archivo .env (ver .env.example) y en
 Vercel se configuran desde el dashboard del proyecto.
 """
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -70,6 +71,22 @@ class Settings(BaseSettings):
     ms_client_secret: str = ""
     ms_redirect_uri: str = "http://localhost:8000/connectors/teams_calendar/callback"
     ms_tenant: str = "common"
+
+    @field_validator(
+        "google_client_id",
+        "google_client_secret",
+        "google_redirect_uri",
+        "google_login_redirect_uri",
+        "google_maps_api_key",
+        "anthropic_api_key",
+        "deepgram_api_key",
+        mode="before",
+    )
+    @classmethod
+    def _strip_secrets(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
 
 
 settings = Settings()

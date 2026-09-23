@@ -134,6 +134,7 @@ def test_login_redirect_derives_from_calendar_when_login_is_localhost(monkeypatc
 
 def test_oauth_uris_endpoint_lists_redirects(monkeypatch):
     monkeypatch.setattr(settings, "google_client_id", "client-id-abc")
+    monkeypatch.setattr(settings, "google_client_secret", "secret")
     monkeypatch.setattr(
         settings, "google_login_redirect_uri", "https://eliseo-backend.vercel.app/auth/google/callback"
     )
@@ -146,8 +147,7 @@ def test_oauth_uris_endpoint_lists_redirects(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["client_id"] == "client-id-abc"
-    assert "https://eliseo-backend.vercel.app/auth/google/callback" in body["redirect_uris"]
-    assert (
-        "https://eliseo-backend.vercel.app/connectors/google_calendar/callback"
-        in body["redirect_uris"]
-    )
+    assert body["has_client_secret"] is True
+    assert body["login_redirect_uri"].endswith("/auth/google/callback")
+    assert body["calendar_redirect_uri"].endswith("/connectors/google_calendar/callback")
+    assert body["warnings"] == []

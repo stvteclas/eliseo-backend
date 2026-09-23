@@ -76,10 +76,12 @@ def _pkce_pair() -> tuple[str, str]:
 
 def _exchange_code_for_access_token(code: str, code_verifier: str | None = None) -> str:
     redirect_uri = resolved_google_login_redirect_uri()
+    client_id = (settings.google_client_id or "").strip()
+    client_secret = (settings.google_client_secret or "").strip()
     data = {
         "code": code,
-        "client_id": settings.google_client_id,
-        "client_secret": settings.google_client_secret,
+        "client_id": client_id,
+        "client_secret": client_secret,
         "redirect_uri": redirect_uri,
         "grant_type": "authorization_code",
     }
@@ -89,7 +91,14 @@ def _exchange_code_for_access_token(code: str, code_verifier: str | None = None)
         response = client.post(TOKEN_URL, data=data, timeout=20)
         if response.status_code >= 400:
             detail = response.text[:500]
-            raise RuntimeError(f"Google token exchange {response.status_code}: {detail}")
+            hint = ""
+            low = detail.lower()
+            if "invalid credentials" in low or "invalid_client" in low:
+                hint = (
+                    f" (revisá GOOGLE_CLIENT_ID/SECRET en Vercel; "
+                    f"client_id=…{client_id[-12:] if len(client_id) > 12 else client_id})"
+                )
+            raise RuntimeError(f"Google token exchange {response.status_code}: {detail}{hint}")
         payload = response.json()
     access = payload.get("access_token")
     if not access:
@@ -167,16 +176,30 @@ def google_oauth_uris() -> dict:
     from app.api.routes.google_calendar import resolved_google_calendar_redirect_uri
 
     client_id = (settings.google_client_id or "").strip()
+    login_uri = resolved_google_login_redirect_uri()
+    calendar_uri = resolved_google_calendar_redirect_uri()
+    warnings: list[str] = []
+    if not (settings.google_client_secret or "").strip():
+        warnings.append("Falta GOOGLE_CLIENT_SECRET en el servidor.")
+    if calendar_uri == login_uri:
+        warnings.append(
+            "GOOGLE_REDIRECT_URI y GOOGLE_LOGIN_REDIRECT_URI son iguales; "
+            "Calendar debe ser .../connectors/google_calendar/callback"
+        )
+    if "localhost" in calendar_uri or "localhost" in login_uri:
+        warnings.append("Hay una URI con localhost; en Vercel tienen que ser https de producción.")
     return {
         "client_id": client_id,
         "client_id_hint": (client_id[:20] + "…") if len(client_id) > 20 else client_id,
-        "redirect_uris": [
-            resolved_google_login_redirect_uri(),
-            resolved_google_calendar_redirect_uri(),
-        ],
+        "has_client_secret": bool((settings.google_client_secret or "").strip()),
+        "login_redirect_uri": login_uri,
+        "calendar_redirect_uri": calendar_uri,
+        "redirect_uris": [login_uri, calendar_uri],
+        "warnings": warnings,
         "hint": (
-            "En Google Cloud → Credenciales → tu cliente Web, "
-            "agregá EXACTAMENTE estas URIs (sin slash final extra)."
+            "En Google Cloud → Credenciales → el cliente Web de este client_id, "
+            "pegá login_redirect_uri y calendar_redirect_uri. "
+            "GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET tienen que ser del MISMO cliente."
         ),
     }
 
