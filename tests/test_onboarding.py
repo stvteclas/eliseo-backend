@@ -96,5 +96,23 @@ def test_google_login_authorize_returns_url(monkeypatch):
     )
     response = client.get("/auth/google/authorize")
     assert response.status_code == 200
-    url = response.json()["authorize_url"]
-    assert "accounts.google.com" in url
+    body = response.json()
+    assert "accounts.google.com" in body["authorize_url"]
+    assert body["redirect_uri"] == "https://example.com/auth/google/callback"
+
+
+def test_login_redirect_derives_from_calendar_when_login_is_localhost(monkeypatch):
+    from app.api.routes.auth_google import resolved_google_login_redirect_uri
+
+    monkeypatch.setattr(
+        settings, "google_login_redirect_uri", "http://localhost:8000/auth/google/callback"
+    )
+    monkeypatch.setattr(
+        settings,
+        "google_redirect_uri",
+        "https://eliseo-backend.vercel.app/connectors/google_calendar/callback",
+    )
+    assert (
+        resolved_google_login_redirect_uri()
+        == "https://eliseo-backend.vercel.app/auth/google/callback"
+    )

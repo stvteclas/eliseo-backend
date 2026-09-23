@@ -42,18 +42,36 @@ LOGIN_SCOPES = [
 GOOGLE_NO_PASSWORD_PREFIX = "google-oauth:"
 
 
+def resolved_google_login_redirect_uri() -> str:
+    """
+    URI de callback del login.
+    Si en Vercel no configuraron GOOGLE_LOGIN_REDIRECT_URI (queda localhost),
+    la derivamos del host de GOOGLE_REDIRECT_URI del Calendar, que ya está en prod.
+    """
+    login = (settings.google_login_redirect_uri or "").strip()
+    cal = (settings.google_redirect_uri or "").strip()
+    if login and "localhost" not in login:
+        return login
+    if cal and "localhost" not in cal and "/connectors/" in cal:
+        return cal.split("/connectors/")[0].rstrip("/") + "/auth/google/callback"
+    if login:
+        return login
+    return "http://localhost:8000/auth/google/callback"
+
+
 def _login_flow() -> Flow:
+    redirect_uri = resolved_google_login_redirect_uri()
     client_config = {
         "web": {
             "client_id": settings.google_client_id,
             "client_secret": settings.google_client_secret,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [settings.google_login_redirect_uri],
+            "redirect_uris": [redirect_uri],
         }
     }
     flow = Flow.from_client_config(client_config, scopes=LOGIN_SCOPES)
-    flow.redirect_uri = settings.google_login_redirect_uri
+    flow.redirect_uri = redirect_uri
     return flow
 
 
@@ -77,7 +95,8 @@ def _upsert_google_user(db: Session, email: str) -> User:
 def authorize_google_login() -> dict:
     if not settings.google_client_id or not settings.google_client_secret:
         raise HTTPException(status_code=503, detail="Google OAuth no está configurado.")
-    if not settings.google_login_redirect_uri:
+    redirect_uri = resolved_google_login_redirect_uri()
+    if not redirect_uri:
         raise HTTPException(status_code=503, detail="Falta GOOGLE_LOGIN_REDIRECT_URI.")
 
     flow = _login_flow()
@@ -86,7 +105,7 @@ def authorize_google_login() -> dict:
         prompt="select_account",
         state=create_login_oauth_state(),
     )
-    return {"authorize_url": authorize_url}
+    return {"authorize_url": authorize_url, "redirect_uri": redirect_uri}
 
 
 @router.get("/callback")
@@ -143,11 +162,9 @@ def google_login_success(token: str | None = None):
 
 
 def _public_base() -> str:
-    # Deriva el origen del redirect de login (…/auth/google/callback → origen).
-    uri = settings.google_login_redirect_uri.rstrip("/")
+    uri = resolved_google_login_redirect_uri().rstrip("/")
     if uri.endswith("/auth/google/callback"):
         return uri[: -len("/auth/google/callback")]
-    # fallback: calendar redirect host
     cal = settings.google_redirect_uri.rstrip("/")
     if "/connectors/" in cal:
         return cal.split("/connectors/")[0]
