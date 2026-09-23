@@ -43,6 +43,7 @@ def test_builtin_tool_names_cover_the_ten_features():
     assert "get_news_headlines" in BUILTIN_TOOL_NAMES
     assert "get_daily_briefing" in BUILTIN_TOOL_NAMES
     assert "make_study_summary" in BUILTIN_TOOL_NAMES
+    assert "play_music" in BUILTIN_TOOL_NAMES
     assert "start_translator_mode" in BUILTIN_TOOL_NAMES
     assert "start_service_connection" in BUILTIN_TOOL_NAMES
     assert "schedule_local_reminder" in BUILTIN_TOOL_NAMES
@@ -246,3 +247,20 @@ def test_make_study_summary_requires_material(monkeypatch):
 
     monkeypatch.setattr(study_service.settings, "anthropic_api_key", "test-key")
     assert "tema" in study_service.make_study_summary("").lower()
+
+
+def test_play_music_queues_open_url(db):
+    from app.services import music as music_service
+
+    user_id = _user(db)
+    reset_client_actions()
+    tools = {t.name: t for t in build_builtin_tools(user_id=user_id, db=db)}
+    msg = tools["play_music"].invoke({"query": "Gustavo Cerati", "service": "spotify"})
+    actions = drain_client_actions()
+    assert "Spotify" in msg
+    assert actions[0]["type"] == "open_url"
+    assert "open.spotify.com/search" in actions[0]["url"]
+
+    plan = music_service.play_music_plan("Cerati", service="youtube_music")
+    assert plan["ok"]
+    assert "music.youtube.com" in plan["url"]

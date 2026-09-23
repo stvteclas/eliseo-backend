@@ -2,7 +2,7 @@
 Herramientas built-in siempre disponibles (sin conector OAuth).
 
 Incluye hora/clima, notas, cálculo, viaje, noticias, traducción,
-acciones del teléfono (timer, push local, llamar), resumen del día
+acciones del teléfono (timer, push local, llamar, música), resumen del día
 y material de estudio.
 """
 
@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.client_actions import queue_client_action
 from app.services import calculator as calculator_service
+from app.services import music as music_service
 from app.services import news as news_service
 from app.services import notes as notes_service
 from app.services import study as study_service
@@ -43,6 +44,7 @@ BUILTIN_TOOL_NAMES = [
     "call_contact",
     "get_daily_briefing",
     "make_study_summary",
+    "play_music",
     "get_onboarding_status",
     "start_service_connection",
 ]
@@ -282,6 +284,17 @@ def build_builtin_tools(
         """
         return study_service.make_study_summary(material=material, mode=mode, depth=depth)
 
+    def play_music(query: str, service: str = "spotify") -> str:
+        """
+        Abre Spotify o YouTube Music en el teléfono con una canción, artista o playlist.
+        service: spotify (default) | youtube_music
+        """
+        plan = music_service.play_music_plan(query, service=service)
+        if not plan["ok"] or not plan["url"]:
+            return plan["message"]
+        queue_client_action({"type": "open_url", "url": plan["url"]})
+        return plan["message"]
+
     def get_onboarding_status() -> str:
         """Dice qué servicios faltan conectar (Calendar, Mercado Pago, Teams)."""
         if user_id is None or db is None:
@@ -428,6 +441,16 @@ def build_builtin_tools(
                 "mode=resumen|esquema|fichas|examen. depth=corto|medio|detallado. "
                 "Usar ante 'haceme un resumen de estudio', 'explicame para rendir', "
                 "'armame fichas', 'preguntame de este tema'."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=play_music,
+            name="play_music",
+            description=(
+                "Abre Spotify o YouTube Music en el teléfono para escuchar una canción, "
+                "artista o playlist. query=qué poner; service=spotify (default) o "
+                "youtube_music. Usar ante 'poné una canción', 'abrí Spotify', "
+                "'quiero escuchar X en YouTube Music'."
             ),
         ),
         StructuredTool.from_function(
