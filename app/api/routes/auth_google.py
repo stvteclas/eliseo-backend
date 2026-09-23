@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.core.oauth_pages import oauth_page
+from app.core.oauth_pages import oauth_failure_page, oauth_page
 from app.core.security import (
     create_access_token,
     create_login_oauth_state,
@@ -40,6 +40,8 @@ LOGIN_SCOPES = [
 ]
 
 GOOGLE_NO_PASSWORD_PREFIX = "google-oauth:"
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 
 
 def resolved_google_login_redirect_uri() -> str:
@@ -66,13 +68,54 @@ def _login_flow() -> Flow:
             "client_id": settings.google_client_id,
             "client_secret": settings.google_client_secret,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
+            "token_uri": TOKEN_URL,
             "redirect_uris": [redirect_uri],
         }
     }
     flow = Flow.from_client_config(client_config, scopes=LOGIN_SCOPES)
     flow.redirect_uri = redirect_uri
     return flow
+
+
+def _exchange_code_for_access_token(code: str) -> str:
+    """Canje manual del code: evita fallos de scope de google-auth-oauthlib."""
+    redirect_uri = resolved_google_login_redirect_uri()
+    with httpx.Client() as client:
+        response = client.post(
+            TOKEN_URL,
+            data={
+                "code": code,
+                "client_id": settings.google_client_id,
+                "client_secret": settings.google_client_secret,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            },
+            timeout=20,
+        )
+        if response.status_code >= 400:
+            detail = response.text[:500]
+            raise RuntimeError(f"Google token exchange {response.status_code}: {detail}")
+        data = response.json()
+    access = data.get("access_token")
+    if not access:
+        raise RuntimeError("Google no devolvió access_token.")
+    return access
+
+
+def _fetch_google_email(access_token: str) -> str:
+    with httpx.Client() as client:
+        response = client.get(
+            USERINFO_URL,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"Google userinfo {response.status_code}: {response.text[:300]}")
+        data = response.json()
+    email = (data.get("email") or "").strip()
+    if not email:
+        raise RuntimeError("Google no devolvió un email.")
+    return email
 
 
 def _upsert_google_user(db: Session, email: str) -> User:
@@ -82,7 +125,7 @@ def _upsert_google_user(db: Session, email: str) -> User:
         return user
     user = User(
         email=email_norm,
-        hashed_password=hash_password(GOOGLE_NO_PASSWORD_PREFIX + secrets.token_urlsafe(24)),
+        hashed_password=hash_password(GOOGLE_NO_PASSWORD_PREFIX + secrets.token_urlsafe(16)),
         persona="eliseo",
     )
     db.add(user)
@@ -117,29 +160,15 @@ def google_login_callback(code: str | None = None, state: str | None = None, err
 
     db = SessionLocal()
     try:
-        flow = _login_flow()
-        flow.fetch_token(code=code)
-        credentials = flow.credentials
-        with httpx.Client() as client:
-            userinfo = client.get(
-                "https://www.googleapis.com/oauth2/v3/userinfo",
-                headers={"Authorization": f"Bearer {credentials.token}"},
-                timeout=15,
-            )
-            userinfo.raise_for_status()
-            data = userinfo.json()
-        email = (data.get("email") or "").strip()
-        if not email:
-            return oauth_page("Google no devolvió un email. Probá con otra cuenta.", 400)
-
+        access_token = _exchange_code_for_access_token(code)
+        email = _fetch_google_email(access_token)
         user = _upsert_google_user(db, email)
         token = create_access_token(user.id)
-        # URL que captura openAuthSessionAsync en la app.
         success = f"{_public_base()}/auth/google/success?{urlencode({'token': token})}"
         return RedirectResponse(url=success, status_code=302)
-    except Exception:
+    except Exception as exc:
         logger.exception("Fallo en callback de login Google")
-        return oauth_page("No se pudo completar el login con Google. Volvé a intentar.", 400)
+        return oauth_failure_page("No se pudo completar el login con Google.", exc)
     finally:
         db.close()
 

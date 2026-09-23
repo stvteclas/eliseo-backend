@@ -30,4 +30,8 @@ def oauth_failure_page(message: str, exc: Exception | None = None) -> HTMLRespon
     detail = ""
     if exc is not None and settings.oauth_debug:
         detail = f" [debug] {type(exc).__name__}: {html_module.escape(str(exc))[:500]}"
+    # En login Google también mostramos un hint corto sin secretos, para
+    # diagnosticar en prueba (token exchange / DB) sin prender OAUTH_DEBUG.
+    elif exc is not None:
+        detail = f" ({html_module.escape(type(exc).__name__)})"
     return oauth_page(message + detail, 400)
