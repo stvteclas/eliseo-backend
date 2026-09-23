@@ -381,7 +381,7 @@ def test_callback_stores_encrypted_token_and_connects_service(db, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert "cerrar esta pestaña" in response.text
+    assert "cerrar esta pestaña" in response.text or "volver a Eliseo" in response.text
 
     credential = db.query(GoogleCalendarCredential).filter_by(user_id=user_id).one()
     assert credential.refresh_token_encrypted != "1//token-real"  # no queda en texto plano
@@ -390,6 +390,22 @@ def test_callback_stores_encrypted_token_and_connects_service(db, monkeypatch):
     connector = db.query(UserConnector).filter_by(user_id=user_id, service_name="google_calendar").one()
     assert connector.scope == "read_only"
     assert connector.store_credential is True
+
+
+def test_callback_redirects_to_app_deep_link_when_present(db, monkeypatch):
+    user_id = _new_user(db)
+    monkeypatch.setattr(google_calendar, "_exchange_code_for_refresh_token", lambda code: "1//token-real")
+    state = create_oauth_state(user_id, app_redirect="exp://192.168.1.10:8081/--/oauth")
+
+    response = client.get(
+        "/connectors/google_calendar/callback",
+        params={"code": "abc", "state": state},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("exp://192.168.1.10:8081/--/oauth")
+    assert "connected=google_calendar" in response.headers["location"]
 
 
 def test_callback_twice_updates_instead_of_duplicating(db, monkeypatch):

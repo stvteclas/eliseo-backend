@@ -14,8 +14,8 @@ registrada como URI de redirección autorizada.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse, RedirectResponse
 from google_auth_oauthlib.flow import Flow
 from sqlalchemy.orm import Session
 
@@ -25,7 +25,8 @@ from app.core.config import settings
 from app.core.crypto import encrypt
 from app.core.database import get_db
 from app.core.oauth_pages import oauth_failure_page, oauth_page
-from app.core.security import create_oauth_state, decode_oauth_state
+from app.core.oauth_redirect import safe_app_redirect, with_query
+from app.core.security import create_oauth_state, decode_oauth_state, extract_oauth_app_redirect
 from app.models.google_calendar_credential import GoogleCalendarCredential
 from app.models.user import User
 
@@ -84,7 +85,11 @@ def _exchange_code_for_refresh_token(code: str) -> str | None:
 
 
 @router.get("/authorize")
-def authorize(account_label: str = "default", current_user: User = Depends(get_current_user)) -> dict:
+def authorize(
+    account_label: str = "default",
+    app_redirect: str | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+) -> dict:
     """account_label (HU-T21) distingue esta cuenta de Calendar de otras que el usuario conecte."""
     if not settings.google_client_id or not settings.google_client_secret:
         raise HTTPException(status_code=503, detail="Google Calendar no está configurado en el servidor.")
@@ -97,12 +102,17 @@ def authorize(account_label: str = "default", current_user: User = Depends(get_c
             detail=f"GOOGLE_REDIRECT_URI inválida en producción: {redirect_uri!r}",
         )
 
+    app_return = safe_app_redirect(app_redirect)
     authorize_url, _ = _build_flow().authorization_url(
         access_type="offline",  # para que Google devuelva un refresh token
         prompt="consent",  # y lo devuelva siempre, aunque el usuario ya haya autorizado antes
-        state=create_oauth_state(current_user.id, account_label),
+        state=create_oauth_state(current_user.id, account_label, app_redirect=app_return),
     )
-    return {"authorize_url": authorize_url, "redirect_uri": redirect_uri}
+    return {
+        "authorize_url": authorize_url,
+        "redirect_uri": redirect_uri,
+        "app_redirect": app_return,
+    }
 
 
 @router.get("/callback", response_class=HTMLResponse)
@@ -119,14 +129,16 @@ def callback(
     if decoded is None or not code:
         return oauth_page("El enlace de autorización no es válido o venció. Volvé a empezar desde la app.", 400)
     user_id, account_label = decoded
+    app_return = safe_app_redirect(extract_oauth_app_redirect(state or ""))
 
     if db.query(User).filter(User.id == user_id).first() is None:
         return oauth_page("El enlace de autorización no es válido.", 400)
 
     try:
         refresh_token = _exchange_code_for_refresh_token(code)
-    except Exception:
-        return oauth_page("No se pudo completar la autorización con Google. Volvé a intentar.", 400)
+    except Exception as exc:
+        logger.exception("Fallo canje Calendar OAuth")
+        return oauth_failure_page("No se pudo completar la autorización con Google. Volvé a intentar.", exc)
     if not refresh_token:
         return oauth_page("Google no entregó el permiso necesario. Volvé a intentar.", 400)
 
@@ -162,4 +174,10 @@ def callback(
             "Se autorizó con Google pero no se pudo guardar la conexión. Volvé a intentar.", exc
         )
 
-    return oauth_page("Listo, ya podés cerrar esta pestaña.")
+    if app_return:
+        # Deep link: openAuthSessionAsync cierra el browser y vuelve a la app.
+        return RedirectResponse(
+            url=with_query(app_return, connected=SERVICE_NAME),
+            status_code=302,
+        )
+    return oauth_page("Listo, ya podés cerrar esta pestaña y volver a Eliseo.")
