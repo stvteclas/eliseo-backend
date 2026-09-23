@@ -151,7 +151,8 @@ def build_builtin_tools(
 
     def get_travel_time(destination: str, origin: str = "") -> str:
         """
-        Tiempo estimado en auto hasta destination.
+        Tráfico y tiempo en auto hasta destination (ej. 'Obelisco', 'aeropuerto Ezeiza').
+        Usala si preguntan por tráfico, demora, cuánto tardan o cómo está el camino.
         origin opcional; si está vacío usa el GPS del usuario.
         """
         return traffic_service.travel_time_report(
@@ -358,8 +359,9 @@ def build_builtin_tools(
             func=get_travel_time,
             name="get_travel_time",
             description=(
-                "Tiempo estimado en auto hasta destination. "
-                "origin opcional; si falta usa GPS."
+                "Tráfico y tiempo en auto hasta un destino. Usar ante preguntas "
+                "de tráfico, demora, 'cuánto tardo' o 'cómo está el camino'. "
+                "destination obligatorio; origin opcional (si falta usa GPS)."
             ),
         ),
         StructuredTool.from_function(

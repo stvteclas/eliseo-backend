@@ -137,3 +137,84 @@ def test_daily_briefing_includes_time_and_weather(db, monkeypatch):
     text = tools["get_daily_briefing"].invoke({})
     assert "hora de Argentina" in text.lower() or "de 20" in text or "Ahora es" in text
     assert "soleado" in text.lower() or "20" in text
+
+
+def test_travel_time_google_with_traffic(monkeypatch):
+    from app.services import traffic as traffic_service
+
+    monkeypatch.setattr(traffic_service.settings, "google_maps_api_key", "test-key")
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "status": "OK",
+                "routes": [
+                    {
+                        "legs": [
+                            {
+                                "duration": {"value": 1200, "text": "20 mins"},
+                                "duration_in_traffic": {"value": 1800, "text": "30 mins"},
+                                "distance": {"value": 10000, "text": "10 km"},
+                                "start_address": "tu ubicación",
+                                "end_address": "Obelisco, Buenos Aires",
+                            }
+                        ]
+                    }
+                ],
+            }
+
+    def fake_get(self, url, **kwargs):
+        assert "maps.googleapis.com" in str(url)
+        return FakeResponse()
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    report = traffic_service.travel_time_report(
+        destination="Obelisco",
+        latitude=-34.6,
+        longitude=-58.4,
+    )
+    assert "30" in report or "minutos" in report.lower()
+    assert "tráfico" in report.lower() or "congest" in report.lower()
+
+
+def test_travel_time_falls_back_to_osrm(monkeypatch):
+    from app.services import traffic as traffic_service
+
+    monkeypatch.setattr(traffic_service.settings, "google_maps_api_key", "")
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [{"lat": "-34.6", "lon": "-58.38", "display_name": "Obelisco"}]
+
+    class FakeOsrm:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"routes": [{"duration": 900, "distance": 5000}]}
+
+    def fake_get(self, url, **kwargs):
+        if "nominatim" in str(url):
+            return FakeResponse()
+        return FakeOsrm()
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    report = traffic_service.travel_time_report(
+        destination="Obelisco",
+        latitude=-34.6,
+        longitude=-58.4,
+    )
+    assert "15 minutos" in report
+    assert "sin el tráfico en vivo" in report

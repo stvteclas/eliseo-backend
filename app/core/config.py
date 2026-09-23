@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # Login con Google (scopes openid/email/profile). Hay que agregarlo como
     # URI autorizada en la misma credencial OAuth web de Google Cloud.
     google_login_redirect_uri: str = "http://localhost:8000/auth/google/callback"
+    # Directions API (tráfico en vivo). Misma Cloud Console; habilitar
+    # "Directions API" y crear una API key restringida.
+    google_maps_api_key: str = ""
 
     # Solo para depurar los callbacks OAuth: muestra en la página el error que devolvió
     # el proveedor (Mercado Pago). Dejar en false salvo mientras se investiga una falla.
