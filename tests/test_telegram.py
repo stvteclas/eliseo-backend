@@ -50,6 +50,8 @@ def test_normalize_phone_and_code():
     assert telegram_service.normalize_phone("+54 9 11 1234-5678") == "+5491112345678"
     assert telegram_service.normalize_phone("5491112345678").startswith("+")
     assert telegram_service.normalize_code("1 2 3 4 5") == "12345"
+    assert telegram_service.normalize_code("uno dos tres cuatro cinco") == "12345"
+    assert telegram_service.normalize_code("el código es 48291") == "48291"
 
 
 def test_telegram_status_without_config(db, monkeypatch):

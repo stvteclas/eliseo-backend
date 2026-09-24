@@ -865,8 +865,9 @@ def build_builtin_tools(
             func=confirm_telegram_code,
             name="confirm_telegram_code",
             description=(
-                "Confirma el código numérico que Telegram mandó al teléfono. "
-                "Usar cuando el usuario dicta el código."
+                "Confirma el código de login de Telegram. "
+                "code=dígitos o palabras (uno dos tres…). "
+                "Si falla, NO vuelvas a connect_telegram: pedí dictarlo otra vez."
             ),
         ),
         StructuredTool.from_function(

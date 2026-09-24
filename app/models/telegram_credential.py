@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped
 
 from app.core.database import Base
@@ -17,10 +17,10 @@ class TelegramCredential(Base):
     account_label: Mapped[str] = Column(String, nullable=False, default="default")
     phone: Mapped[str | None] = Column(String, nullable=True)
     # StringSession de Telethon cifrada (cuando login_stage == "connected")
-    session_encrypted: Mapped[str | None] = Column(String, nullable=True)
+    session_encrypted: Mapped[str | None] = Column(Text, nullable=True)
     # Durante el login: sesión temporal + hash del código
-    pending_session_encrypted: Mapped[str | None] = Column(String, nullable=True)
-    phone_code_hash: Mapped[str | None] = Column(String, nullable=True)
+    pending_session_encrypted: Mapped[str | None] = Column(Text, nullable=True)
+    phone_code_hash: Mapped[str | None] = Column(Text, nullable=True)
     # none | code | password | connected
     login_stage: Mapped[str] = Column(String, nullable=False, default="none")
     telegram_user_id: Mapped[str | None] = Column(String, nullable=True)

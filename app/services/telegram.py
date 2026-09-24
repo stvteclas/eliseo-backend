@@ -6,8 +6,8 @@ Flujo de voz:
   2. confirm_code(code) → sesión lista (o pide 2FA)
   3. confirm_password(pwd) → si hay verificación en dos pasos
 
-La StringSession se guarda cifrada en DB; en cada tool se conecta y desconecta
-(compatible con Vercel serverless).
+Importante: las llamadas a Telethon corren en otro hilo (asyncio.run); la
+sesión SQLAlchemy NUNCA se usa desde ese hilo — solo se pasan strings.
 """
 
 from __future__ import annotations
@@ -23,6 +23,21 @@ from app.core.config import settings
 from app.core.crypto import decrypt, encrypt
 from app.models.telegram_credential import TelegramCredential
 
+_DIGIT_WORDS = {
+    "cero": "0",
+    "zero": "0",
+    "uno": "1",
+    "una": "1",
+    "dos": "2",
+    "tres": "3",
+    "cuatro": "4",
+    "cinco": "5",
+    "seis": "6",
+    "siete": "7",
+    "ocho": "8",
+    "nueve": "9",
+}
+
 
 def configured() -> bool:
     return bool(settings.telegram_api_id) and bool((settings.telegram_api_hash or "").strip())
@@ -30,12 +45,10 @@ def configured() -> bool:
 
 def normalize_phone(raw: str) -> str:
     s = (raw or "").strip()
-    # "más cincuenta y cuatro…" no; el agente debería pasar dígitos.
     digits = re.sub(r"[^\d+]", "", s)
     if digits.startswith("00"):
         digits = "+" + digits[2:]
     if digits and not digits.startswith("+"):
-        # Argentina sin +: asumir +54 si empieza con 9 / 11 / 15…
         if digits.startswith("54"):
             digits = "+" + digits
         else:
@@ -44,17 +57,54 @@ def normalize_phone(raw: str) -> str:
 
 
 def normalize_code(raw: str) -> str:
-    return re.sub(r"\D", "", raw or "")
+    """
+    Acepta dígitos, o código dictado en español («uno dos tres…»).
+    Telegram suele mandar 5 dígitos.
+    """
+    text = (raw or "").strip().lower()
+    text = (
+        text.replace("á", "a")
+        .replace("é", "e")
+        .replace("í", "i")
+        .replace("ó", "o")
+        .replace("ú", "u")
+    )
+    # Quitar frases típicas del STT (no tocar palabras sueltas como «es» / «tres»)
+    for junk in (
+        "el codigo es",
+        "codigo es",
+        "el codigo",
+        "mi codigo es",
+        "el code is",
+        "telegram",
+    ):
+        text = text.replace(junk, " ")
+
+    digits = re.sub(r"\D", "", text)
+    if len(digits) >= 4:
+        # Preferir los últimos 5 si el STT agregó basura numérica
+        if len(digits) > 6:
+            digits = digits[-5:]
+        return digits
+
+    parts = re.findall(r"[a-z]+", text)
+    out = []
+    for p in parts:
+        if p in _DIGIT_WORDS:
+            out.append(_DIGIT_WORDS[p])
+    joined = "".join(out)
+    if len(joined) >= 4:
+        return joined[:6]
+    return digits or joined
 
 
 def _run(coro):
-    """Ejecuta una corrutina desde tools sync (hilo worker de LangGraph)."""
+    """Ejecuta una corrutina fuera del event loop de FastAPI/LangGraph."""
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
 
-    # Ya hay loop (poco frecuente): correr en hilo aparte.
     import concurrent.futures
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -72,7 +122,7 @@ def _api() -> tuple[int, str]:
 def _get_or_create_cred(db: Session, user_id: int) -> TelegramCredential:
     row = db.query(TelegramCredential).filter(TelegramCredential.user_id == user_id).first()
     if row is None:
-        row = TelegramCredential(user_id=user_id, login_stage="none")
+        row = TelegramCredential(user_id=user_id, login_stage="none", account_label="default")
         db.add(row)
         db.commit()
         db.refresh(row)
@@ -94,7 +144,10 @@ def status_text(db: Session, user_id: int) -> str:
             "(ej. más 54 9 11…) y te mando el código."
         )
     if row.login_stage == "code":
-        return f"Estoy esperando el código que Telegram mandó al {row.phone}."
+        return (
+            f"Estoy esperando el código que Telegram mandó al {row.phone}. "
+            "Dictalo dígito por dígito, por ejemplo: uno dos tres cuatro cinco."
+        )
     if row.login_stage == "password":
         return "Telegram pide la contraseña de verificación en dos pasos."
     name = row.display_name or row.phone or "tu cuenta"
@@ -106,29 +159,98 @@ def start_login(db: Session, user_id: int, phone: str) -> str:
     if len(re.sub(r"\D", "", phone_n)) < 8:
         return "Necesito el número completo con código de país, por ejemplo más 54 9 11…"
     try:
-        return _run(_start_login_async(db, user_id, phone_n))
+        session_str, phone_code_hash = _run(_send_code_net(phone_n))
     except Exception as exc:
         return _friendly_error(exc)
+
+    if not session_str or not phone_code_hash:
+        return "Telegram no devolvió un código válido. Probá de nuevo en un minuto."
+
+    row = _get_or_create_cred(db, user_id)
+    row.phone = phone_n
+    row.pending_session_encrypted = encrypt(session_str)
+    row.phone_code_hash = phone_code_hash
+    row.session_encrypted = None
+    row.login_stage = "code"
+    row.updated_at = datetime.now(timezone.utc)
+    db.add(row)
+    db.commit()
+    return (
+        f"Te mandé un código de Telegram al {phone_n}. "
+        "Cuando te llegue, dictalo dígito por dígito: por ejemplo uno dos tres cuatro cinco. "
+        "No pidas otro código salvo que diga que venció."
+    )
 
 
 def confirm_code(db: Session, user_id: int, code: str) -> str:
     code_n = normalize_code(code)
     if len(code_n) < 4:
-        return "Ese código parece corto. Decí los dígitos que te mandó Telegram."
+        return (
+            "No entendí bien el código. Dictalo dígito por dígito, "
+            "por ejemplo: uno dos tres cuatro cinco."
+        )
+
+    row = db.query(TelegramCredential).filter(TelegramCredential.user_id == user_id).first()
+    if row is None or row.login_stage not in {"code", "password"} or not row.pending_session_encrypted:
+        return "No hay un login de Telegram en curso. Empezá diciendo tu número."
+    if not row.phone or not row.phone_code_hash:
+        return "Falta el número o el hash del código. Empezá de nuevo con tu teléfono."
+
     try:
-        return _run(_confirm_code_async(db, user_id, code_n))
+        session_str = decrypt(row.pending_session_encrypted)
+    except Exception:
+        return "No pude leer la sesión pendiente. Decime el número otra vez para reiniciar."
+
+    try:
+        outcome = _run(
+            _sign_in_with_code_net(
+                session_str,
+                row.phone,
+                code_n,
+                row.phone_code_hash,
+            )
+        )
     except Exception as exc:
-        return _friendly_error(exc)
+        return _friendly_error(exc, heard_code=code_n)
+
+    kind = outcome.get("kind")
+    if kind == "password":
+        row.pending_session_encrypted = encrypt(outcome["session"])
+        row.login_stage = "password"
+        row.updated_at = datetime.now(timezone.utc)
+        db.add(row)
+        db.commit()
+        return (
+            "Telegram pide tu contraseña de verificación en dos pasos. "
+            "Decila ahora."
+        )
+    if kind == "ok":
+        _mark_connected(db, row, outcome["me"], outcome["session"])
+        return f"Listo, Telegram quedó conectado como {row.display_name}."
+    return "No pude completar el login de Telegram."
 
 
 def confirm_password(db: Session, user_id: int, password: str) -> str:
     pwd = (password or "").strip()
     if not pwd:
         return "Decime la contraseña de verificación en dos pasos de Telegram."
+
+    row = db.query(TelegramCredential).filter(TelegramCredential.user_id == user_id).first()
+    if row is None or row.login_stage != "password" or not row.pending_session_encrypted:
+        return "No estoy esperando la contraseña de Telegram. Si hace falta, empezá con el número."
+
     try:
-        return _run(_confirm_password_async(db, user_id, pwd))
+        session_str = decrypt(row.pending_session_encrypted)
+    except Exception:
+        return "No pude leer la sesión. Empezá de nuevo con tu número."
+
+    try:
+        outcome = _run(_sign_in_password_net(session_str, pwd))
     except Exception as exc:
         return _friendly_error(exc)
+
+    _mark_connected(db, row, outcome["me"], outcome["session"])
+    return f"Listo, Telegram quedó conectado como {row.display_name}."
 
 
 def disconnect(db: Session, user_id: int) -> str:
@@ -146,27 +268,30 @@ def disconnect(db: Session, user_id: int) -> str:
 
 
 def list_dialogs(db: Session, user_id: int, limit: int = 15) -> str:
-    if not is_connected(db, user_id):
+    session_str = _session_for_user(db, user_id)
+    if not session_str:
         return "Primero conectá Telegram: decime tu número con código de país."
     try:
-        return _run(_list_dialogs_async(db, user_id, limit))
+        return _run(_list_dialogs_net(session_str, limit))
     except Exception as exc:
         return _friendly_error(exc)
 
 
 def get_messages(db: Session, user_id: int, contact: str, limit: int = 8) -> str:
-    if not is_connected(db, user_id):
+    session_str = _session_for_user(db, user_id)
+    if not session_str:
         return "Primero conectá Telegram."
     if not (contact or "").strip():
         return "Decime el nombre del contacto o chat."
     try:
-        return _run(_get_messages_async(db, user_id, contact.strip(), limit))
+        return _run(_get_messages_net(session_str, contact.strip(), limit))
     except Exception as exc:
         return _friendly_error(exc)
 
 
 def send_message(db: Session, user_id: int, contact: str, text: str) -> str:
-    if not is_connected(db, user_id):
+    session_str = _session_for_user(db, user_id)
+    if not session_str:
         return "Primero conectá Telegram."
     body = (text or "").strip()
     if not body:
@@ -174,20 +299,37 @@ def send_message(db: Session, user_id: int, contact: str, text: str) -> str:
     if not (contact or "").strip():
         return "Decime a quién."
     try:
-        return _run(_send_message_async(db, user_id, contact.strip(), body))
+        return _run(_send_message_net(session_str, contact.strip(), body))
     except Exception as exc:
         return _friendly_error(exc)
 
 
-def _friendly_error(exc: Exception) -> str:
+def _session_for_user(db: Session, user_id: int) -> str | None:
+    row = db.query(TelegramCredential).filter(TelegramCredential.user_id == user_id).first()
+    if row is None or row.login_stage != "connected" or not row.session_encrypted:
+        return None
+    try:
+        return decrypt(row.session_encrypted)
+    except Exception:
+        return None
+
+
+def _friendly_error(exc: Exception, heard_code: str | None = None) -> str:
     name = type(exc).__name__
     msg = str(exc) or name
     if "TELEGRAM_API" in msg or "configurar" in msg.lower():
         return msg
+    if "ENCRYPTION_KEY" in msg or "Fernet" in name:
+        return "Falta o está mal ENCRYPTION_KEY en el servidor. Sin eso no puedo guardar la sesión."
     if "FloodWait" in name or "flood" in msg.lower():
         return "Telegram me pidió esperar un rato por demasiados intentos. Probá en unos minutos."
-    if "PhoneCodeInvalid" in name or "phone code" in msg.lower():
-        return "Ese código no es válido. Pedime que te mande otro o dictalo de nuevo."
+    if "PhoneCodeInvalid" in name or "phone code invalid" in msg.lower():
+        heard = f" (yo escuché {heard_code})" if heard_code else ""
+        return (
+            f"Ese código no coincidió{heard}. "
+            "Volvé a dictarlo dígito por dígito, despacio. "
+            "No pidas otro código todavía: el actual sigue valiendo unos minutos."
+        )
     if "PhoneCodeExpired" in name or "expired" in msg.lower():
         return "El código venció. Decime el número de nuevo para pedirte otro."
     if "Password" in name and "invalid" in msg.lower():
@@ -223,6 +365,9 @@ def _mark_connected(db: Session, row: TelegramCredential, me: Any, session_str: 
     )
 
 
+# --- Solo red Telethon (sin Session de SQLAlchemy) ---
+
+
 async def _client_from_session(session_str: str):
     from telethon import TelegramClient
     from telethon.sessions import StringSession
@@ -233,7 +378,7 @@ async def _client_from_session(session_str: str):
     return client
 
 
-async def _start_login_async(db: Session, user_id: int, phone: str) -> str:
+async def _send_code_net(phone: str) -> tuple[str, str]:
     from telethon import TelegramClient
     from telethon.sessions import StringSession
 
@@ -243,82 +388,43 @@ async def _start_login_async(db: Session, user_id: int, phone: str) -> str:
     try:
         sent = await client.send_code_request(phone)
         session_str = client.session.save()
-        row = _get_or_create_cred(db, user_id)
-        row.phone = phone
-        row.pending_session_encrypted = encrypt(session_str)
-        row.phone_code_hash = sent.phone_code_hash
-        row.session_encrypted = None
-        row.login_stage = "code"
-        row.updated_at = datetime.now(timezone.utc)
-        db.add(row)
-        db.commit()
-        return (
-            f"Te mandé un código de Telegram al {phone}. "
-            "Cuando te llegue, decímelo (solo los números)."
-        )
+        return session_str, sent.phone_code_hash
     finally:
         await client.disconnect()
 
 
-async def _confirm_code_async(db: Session, user_id: int, code: str) -> str:
+async def _sign_in_with_code_net(
+    session_str: str,
+    phone: str,
+    code: str,
+    phone_code_hash: str,
+) -> dict:
     from telethon.errors import SessionPasswordNeededError
 
-    row = db.query(TelegramCredential).filter(TelegramCredential.user_id == user_id).first()
-    if row is None or row.login_stage not in {"code", "password"} or not row.pending_session_encrypted:
-        return "No hay un login de Telegram en curso. Empezá diciendo tu número."
-    if not row.phone or not row.phone_code_hash:
-        return "Falta el número o el hash del código. Empezá de nuevo con tu teléfono."
-
-    session_str = decrypt(row.pending_session_encrypted)
     client = await _client_from_session(session_str)
     try:
         try:
             await client.sign_in(
-                phone=row.phone,
+                phone=phone,
                 code=code,
-                phone_code_hash=row.phone_code_hash,
+                phone_code_hash=phone_code_hash,
             )
         except SessionPasswordNeededError:
-            # Guardar sesión intermedia (ya autenticada parcialmente)
-            mid = client.session.save()
-            row.pending_session_encrypted = encrypt(mid)
-            row.login_stage = "password"
-            row.updated_at = datetime.now(timezone.utc)
-            db.add(row)
-            db.commit()
-            return (
-                "Telegram pide tu contraseña de verificación en dos pasos. "
-                "Decila ahora (o deletreala despacio)."
-            )
+            return {"kind": "password", "session": client.session.save()}
         me = await client.get_me()
-        _mark_connected(db, row, me, client.session.save())
-        return f"Listo, Telegram quedó conectado como {row.display_name}."
+        return {"kind": "ok", "session": client.session.save(), "me": me}
     finally:
         await client.disconnect()
 
 
-async def _confirm_password_async(db: Session, user_id: int, password: str) -> str:
-    row = db.query(TelegramCredential).filter(TelegramCredential.user_id == user_id).first()
-    if row is None or row.login_stage != "password" or not row.pending_session_encrypted:
-        return "No estoy esperando la contraseña de Telegram. Si hace falta, empezá con el número."
-
-    session_str = decrypt(row.pending_session_encrypted)
+async def _sign_in_password_net(session_str: str, password: str) -> dict:
     client = await _client_from_session(session_str)
     try:
         await client.sign_in(password=password)
         me = await client.get_me()
-        _mark_connected(db, row, me, client.session.save())
-        return f"Listo, Telegram quedó conectado como {row.display_name}."
+        return {"kind": "ok", "session": client.session.save(), "me": me}
     finally:
         await client.disconnect()
-
-
-async def _with_user_client(db: Session, user_id: int):
-    row = db.query(TelegramCredential).filter(TelegramCredential.user_id == user_id).first()
-    if row is None or not row.session_encrypted or row.login_stage != "connected":
-        raise RuntimeError("Telegram no está conectado.")
-    session_str = decrypt(row.session_encrypted)
-    return await _client_from_session(session_str), row
 
 
 async def _resolve_dialog(client, contact: str):
@@ -331,7 +437,6 @@ async def _resolve_dialog(client, contact: str):
         .replace("ú", "u")
         .replace("ñ", "n")
     )
-    # Username @foo
     if needle.startswith("@"):
         return await client.get_entity(needle)
 
@@ -353,15 +458,14 @@ async def _resolve_dialog(client, contact: str):
                 best = dialog.entity
     if best is not None:
         return best
-    # Último intento: get_entity por username sin @
     try:
         return await client.get_entity(contact)
     except Exception:
         return None
 
 
-async def _list_dialogs_async(db: Session, user_id: int, limit: int) -> str:
-    client, _row = await _with_user_client(db, user_id)
+async def _list_dialogs_net(session_str: str, limit: int) -> str:
+    client = await _client_from_session(session_str)
     try:
         names = []
         async for dialog in client.iter_dialogs(limit=max(1, min(int(limit or 15), 30))):
@@ -374,8 +478,8 @@ async def _list_dialogs_async(db: Session, user_id: int, limit: int) -> str:
         await client.disconnect()
 
 
-async def _get_messages_async(db: Session, user_id: int, contact: str, limit: int) -> str:
-    client, _row = await _with_user_client(db, user_id)
+async def _get_messages_net(session_str: str, contact: str, limit: int) -> str:
+    client = await _client_from_session(session_str)
     try:
         entity = await _resolve_dialog(client, contact)
         if entity is None:
@@ -397,8 +501,8 @@ async def _get_messages_async(db: Session, user_id: int, contact: str, limit: in
         await client.disconnect()
 
 
-async def _send_message_async(db: Session, user_id: int, contact: str, text: str) -> str:
-    client, _row = await _with_user_client(db, user_id)
+async def _send_message_net(session_str: str, contact: str, text: str) -> str:
+    client = await _client_from_session(session_str)
     try:
         entity = await _resolve_dialog(client, contact)
         if entity is None:
