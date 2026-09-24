@@ -55,7 +55,7 @@ SYSTEM_PROMPT_TEMPLATE = (
     "hacia un lugar, usá get_travel_time (con GPS si no dan origen). "
     "Si piden estudiar, resumir para un examen, fichas o que los pregunte "
     "sobre un tema o un texto, usá make_study_summary. "
-    "Si piden poner música, usá play_music (suena en Eliseo, no abras Spotify). "
+    "Si piden poner música, usá play_music (abre Spotify o YouTube Music en el teléfono). "
     "Si piden parar la música, usá stop_music. "
     "Si piden leer el correo, mails o bandeja de entrada, usá get_recent_emails "
     "o read_email; si piden mandar un mail, usá send_email "

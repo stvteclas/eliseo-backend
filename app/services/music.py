@@ -1,4 +1,4 @@
-"""Música dentro de Eliseo: previews encadenados (Deezer) para no salir de la app."""
+"""Abrir Spotify o YouTube Music por fuera de Eliseo."""
 
 from __future__ import annotations
 
@@ -52,94 +52,100 @@ def _spotify_token() -> str | None:
         return None
 
 
-def _spotify_previews(query: str, limit: int = 8) -> dict | None:
-    """Tracks con preview_url si hay Client Credentials."""
+def _spotify_open_target(query: str) -> dict | None:
+    """Playlist o track reproducible en la app de Spotify."""
     token = _spotify_token()
     if not token:
         return None
     headers = {"Authorization": f"Bearer {token}"}
+    q = query.strip()
     try:
-        tracks = httpx.get(
+        playlists = httpx.get(
             "https://api.spotify.com/v1/search",
-            params={"q": query.strip(), "type": "track", "limit": max(1, min(limit, 10))},
+            params={"q": q, "type": "playlist", "limit": 5},
             headers=headers,
             timeout=8.0,
         )
-        if tracks.status_code != 200:
-            return None
-        items = (tracks.json().get("tracks") or {}).get("items") or []
-        previews: list[str] = []
-        titles: list[str] = []
-        for track in items:
-            preview = (track.get("preview_url") or "").strip()
-            if not preview:
-                continue
-            name = (track.get("name") or "").strip()
-            artists = ", ".join(
-                (a.get("name") or "") for a in (track.get("artists") or []) if a.get("name")
-            )
-            titles.append(f"{name}" + (f" — {artists}" if artists else ""))
-            previews.append(preview)
-        if not previews:
-            return None
-        return {
-            "title": titles[0],
-            "preview_urls": previews,
-            "preview_url": previews[0],
-            "service": "spotify",
-        }
+        if playlists.status_code == 200:
+            for item in (playlists.json().get("playlists") or {}).get("items") or []:
+                if item and item.get("id"):
+                    pid = item["id"]
+                    return {
+                        "title": (item.get("name") or q).strip(),
+                        "url": f"https://open.spotify.com/playlist/{pid}",
+                        "url_alt": f"spotify:playlist:{pid}",
+                        "service": "spotify",
+                    }
+        tracks = httpx.get(
+            "https://api.spotify.com/v1/search",
+            params={"q": q, "type": "track", "limit": 1},
+            headers=headers,
+            timeout=8.0,
+        )
+        if tracks.status_code == 200:
+            items = (tracks.json().get("tracks") or {}).get("items") or []
+            if items and items[0].get("id"):
+                track = items[0]
+                tid = track["id"]
+                name = (track.get("name") or q).strip()
+                artists = ", ".join(
+                    (a.get("name") or "") for a in (track.get("artists") or []) if a.get("name")
+                )
+                title = f"{name}" + (f" — {artists}" if artists else "")
+                return {
+                    "title": title,
+                    "url": f"https://open.spotify.com/track/{tid}",
+                    "url_alt": f"spotify:track:{tid}",
+                    "service": "spotify",
+                }
     except Exception:
         logger.exception("Spotify search falló")
-        return None
+    return None
 
 
-def _deezer_previews(query: str, limit: int = 8) -> dict | None:
-    """API pública: varios MP3 de 30s para reproducir en Eliseo sin salir de la app."""
+def _deezer_search_label(query: str) -> str | None:
+    """Nombre exacto de un tema para armar mejor la búsqueda en Spotify/YT."""
     try:
         response = httpx.get(
             "https://api.deezer.com/search",
-            params={"q": query.strip(), "limit": max(1, min(limit, 12))},
+            params={"q": query.strip(), "limit": 1},
             timeout=8.0,
         )
         if response.status_code != 200:
             return None
         items = response.json().get("data") or []
-        previews: list[str] = []
-        titles: list[str] = []
-        for track in items:
-            preview = (track.get("preview") or "").strip()
-            if not preview:
-                continue
-            title = (track.get("title") or query).strip()
-            artist = ((track.get("artist") or {}).get("name") or "").strip()
-            titles.append(f"{title}" + (f" — {artist}" if artist else ""))
-            previews.append(preview)
-        if not previews:
+        if not items:
             return None
-        return {
-            "title": titles[0],
-            "preview_urls": previews,
-            "preview_url": previews[0],
-            "count": len(previews),
-            "service": "deezer",
-        }
+        track = items[0]
+        title = (track.get("title") or "").strip()
+        artist = ((track.get("artist") or {}).get("name") or "").strip()
+        if title and artist:
+            return f"{title} {artist}"
+        return title or None
     except Exception:
         logger.exception("Deezer search falló")
         return None
 
 
+def build_music_url(query: str, service: str = "spotify") -> str:
+    q = (query or "").strip()
+    svc = normalize_service(service)
+    if svc == "youtube_music":
+        return f"https://music.youtube.com/search?q={quote(q)}"
+    return f"https://open.spotify.com/search/{quote(q)}"
+
+
 def play_music_plan(query: str, service: str = "spotify") -> dict:
     """
-    Plan para reproducir DENTRO de Eliseo (cola de previews).
-    No abre Spotify/YT: si salís de la app, Eliseo pierde el micrófono.
+    Abre Spotify o YouTube Music en el teléfono (fuera de Eliseo).
     """
     q = (query or "").strip()
     if not q:
         return {
             "ok": False,
             "message": "Decime qué canción, artista o estilo querés escuchar.",
-            "preview_url": None,
-            "preview_urls": [],
+            "url": None,
+            "url_alt": None,
             "service": None,
             "label": None,
         }
@@ -147,46 +153,33 @@ def play_music_plan(query: str, service: str = "spotify") -> dict:
         q = q[:200]
 
     requested = normalize_service(service)
-    resolved = _spotify_previews(q) if requested == "spotify" else None
-    if resolved is None:
-        resolved = _deezer_previews(q)
+    label = SERVICE_LABELS[requested]
 
-    if not resolved:
-        return {
-            "ok": False,
-            "message": f"No encontré música para «{q}». Probá con otro artista o estilo.",
-            "preview_url": None,
-            "preview_urls": [],
-            "service": None,
-            "label": None,
-        }
+    if requested == "spotify":
+        resolved = _spotify_open_target(q)
+        if resolved:
+            return {
+                "ok": True,
+                "message": f"Te abro {label} con «{resolved['title']}».",
+                "url": resolved["url"],
+                "url_alt": resolved.get("url_alt"),
+                "service": "spotify",
+                "label": label,
+            }
 
-    n = len(resolved.get("preview_urls") or [])
-    title = resolved["title"]
-    if n > 1:
-        message = (
-            f"Te pongo «{title}» y sigo con temas parecidos. "
-            "Seguimos en Eliseo: si me necesitás, decime Eliseo."
-        )
+    needle = _deezer_search_label(q) or q
+    if requested == "youtube_music":
+        url = f"https://music.youtube.com/search?q={quote(needle)}"
+        alt = f"https://www.youtube.com/results?search_query={quote(needle)}"
     else:
-        message = f"Te pongo «{title}». Si me necesitás, decime Eliseo."
+        url = f"https://open.spotify.com/search/{quote(needle)}"
+        alt = f"spotify:search:{quote(needle)}"
 
     return {
         "ok": True,
-        "message": message,
-        "preview_url": resolved.get("preview_url"),
-        "preview_urls": list(resolved.get("preview_urls") or []),
-        "url": None,
-        "url_alt": None,
-        "service": resolved.get("service") or requested,
-        "label": "Eliseo",
+        "message": f"Te abro {label} con «{needle}».",
+        "url": url,
+        "url_alt": alt,
+        "service": requested,
+        "label": label,
     }
-
-
-def build_music_url(query: str, service: str = "spotify") -> str:
-    """Compat tests / fallback de búsqueda externa (ya no se usa para play)."""
-    q = (query or "").strip()
-    svc = normalize_service(service)
-    if svc == "youtube_music":
-        return f"https://music.youtube.com/search?q={quote(q)}"
-    return f"https://open.spotify.com/search/{quote(q)}"

@@ -287,25 +287,30 @@ def build_builtin_tools(
 
     def play_music(query: str, service: str = "spotify") -> str:
         """
-        Reproduce música DENTRO de Eliseo (no abre Spotify/YouTube).
-        Así sigue escuchando el nombre y puede avisar bajando el volumen.
-        query: canción, artista o estilo. service se ignora si no hay API Spotify.
+        Abre Spotify o YouTube Music en el teléfono (fuera de Eliseo).
+        query: canción, artista o estilo. service: spotify | youtube_music.
         """
         plan = music_service.play_music_plan(query, service=service)
-        if not plan["ok"]:
+        if not plan["ok"] or not plan.get("url"):
             return plan["message"]
-        urls = list(plan.get("preview_urls") or [])
-        if plan.get("preview_url") and plan["preview_url"] not in urls:
-            urls.insert(0, plan["preview_url"])
-        if not urls:
-            return plan["message"]
-        queue_client_action({"type": "play_audio", "urls": urls, "url": urls[0]})
+        # Cortar cualquier preview viejo que haya quedado sonando en Eliseo.
+        queue_client_action({"type": "stop_audio"})
+        action: dict = {"type": "open_url", "url": plan["url"]}
+        if plan.get("url_alt"):
+            action["url_alt"] = plan["url_alt"]
+        queue_client_action(action)
         return plan["message"]
 
     def stop_music() -> str:
-        """Para la música que está sonando en Eliseo."""
+        """
+        Para lo que suene en Eliseo. Si la música está en Spotify/YouTube,
+        no se puede pausar desde acá.
+        """
         queue_client_action({"type": "stop_audio"})
-        return "Listo, pausé la música."
+        return (
+            "Corté lo que sonaba en Eliseo. "
+            "Si sigue Spotify o YouTube Music, pausalo en esa app."
+        )
 
     def get_onboarding_status() -> str:
         """Dice qué servicios faltan conectar (Calendar, Mercado Pago, Teams)."""
@@ -459,16 +464,19 @@ def build_builtin_tools(
             func=play_music,
             name="play_music",
             description=(
-                "Reproduce música DENTRO de Eliseo (sin abrir Spotify/YouTube). "
-                "query=canción, artista o estilo (ej. 'rock', 'Cerati', 'cumbia'). "
-                "Usar ante 'poné música', 'poné rock', 'quiero escuchar X'. "
-                "La app sigue escuchando: el usuario puede decir Eliseo para pedir algo."
+                "Abre Spotify o YouTube Music en el teléfono para escuchar. "
+                "query=canción, artista o estilo. service=spotify (default) o youtube_music. "
+                "Usar ante 'poné música', 'poné rock', 'abrí Spotify'."
             ),
         ),
         StructuredTool.from_function(
             func=stop_music,
             name="stop_music",
-            description="Para la música que suena en Eliseo. Usar ante 'pará la música', 'stop', 'silencio la música'.",
+            description=(
+                "Intenta parar la música. Corta audio de Eliseo; "
+                "si suena en Spotify/YouTube hay que pausar ahí. "
+                "Usar ante 'pará la música', 'stop', 'pausá'."
+            ),
         ),
         StructuredTool.from_function(
             func=get_onboarding_status,

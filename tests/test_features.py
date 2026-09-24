@@ -259,22 +259,20 @@ def test_play_music_queues_open_url(db, monkeypatch):
         "play_music_plan",
         lambda query, service="spotify": {
             "ok": True,
-            "message": "Te pongo Cerati.",
-            "preview_url": "https://example.com/a.mp3",
-            "preview_urls": ["https://example.com/a.mp3", "https://example.com/b.mp3"],
-            "url": None,
-            "url_alt": None,
-            "service": "deezer",
-            "label": "Eliseo",
+            "message": "Te abro Spotify con «Cerati».",
+            "url": "https://open.spotify.com/search/Cerati",
+            "url_alt": "spotify:search:Cerati",
+            "service": "spotify",
+            "label": "Spotify",
         },
     )
     tools = {t.name: t for t in build_builtin_tools(user_id=user_id, db=db)}
     msg = tools["play_music"].invoke({"query": "Gustavo Cerati", "service": "spotify"})
     actions = drain_client_actions()
-    assert "Cerati" in msg or "pongo" in msg
-    assert actions[0]["type"] == "play_audio"
-    assert "example.com/a.mp3" in actions[0]["url"]
-    assert len(actions[0]["urls"]) == 2
+    assert "Spotify" in msg
+    assert actions[0]["type"] == "stop_audio"
+    assert actions[1]["type"] == "open_url"
+    assert "open.spotify.com" in actions[1]["url"]
 
 
 def test_play_music_spotify_track_when_api_resolves(db, monkeypatch):
@@ -284,19 +282,20 @@ def test_play_music_spotify_track_when_api_resolves(db, monkeypatch):
     reset_client_actions()
     monkeypatch.setattr(
         music_service,
-        "_spotify_previews",
-        lambda q, limit=8: {
+        "_spotify_open_target",
+        lambda q: {
             "title": "Crimen",
-            "preview_urls": ["https://example.com/crimen.mp3"],
-            "preview_url": "https://example.com/crimen.mp3",
+            "url": "https://open.spotify.com/track/tid",
+            "url_alt": "spotify:track:tid",
             "service": "spotify",
         },
     )
     tools = {t.name: t for t in build_builtin_tools(user_id=user_id, db=db)}
     msg = tools["play_music"].invoke({"query": "Cerati", "service": "spotify"})
     actions = drain_client_actions()
-    assert "Crimen" in msg or "pongo" in msg
-    assert actions[0]["type"] == "play_audio"
+    assert "Spotify" in msg
+    assert actions[-1]["type"] == "open_url"
+    assert "open.spotify.com/track" in actions[-1]["url"]
 
 
 def test_stop_music_queues_action(db):
@@ -306,7 +305,7 @@ def test_stop_music_queues_action(db):
     assert "stop_music" in tools
     msg = tools["stop_music"].invoke({})
     actions = drain_client_actions()
-    assert "paus" in msg.lower() or "música" in msg.lower()
+    assert "eliseo" in msg.lower() or "spotify" in msg.lower() or "youtube" in msg.lower()
     assert actions == [{"type": "stop_audio"}]
 
 
