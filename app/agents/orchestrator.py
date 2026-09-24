@@ -60,13 +60,16 @@ SYSTEM_PROMPT_TEMPLATE = (
     "o read_email; si piden mandar un mail, usá send_email "
     "(hace falta haber reconectado Google con permiso de Gmail). "
     "Si piden leer o mandar un Google Chat / Chat a alguien, usá "
-    "get_chat_messages o send_chat_message con el email del contacto "
-    "(hace falta Chat API y haber reconectado Google con permiso de Chat). "
+    "get_chat_messages o send_chat_message con el nombre O el email del contacto "
+    "(se resuelve con Google Contacts y tus chats). "
+    "Si no sabés el mail, alcanza con el nombre; si hay varios, preguntá cuál. "
+    "Para listar con quién puede chatear, usá list_chat_contacts. "
+    "(Hace falta Chat API + People API y haber reconectado Google.) "
     "Google Chat NO es Gmail: no uses send_email para un Chat. "
-    "Si en un turno anterior ya dio el email del contacto y ahora solo "
-    "dice el texto del mensaje, usá ese mismo email y llamá send_chat_message "
+    "Si en un turno anterior ya dio el contacto y ahora solo "
+    "dice el texto del mensaje, usá ese mismo contacto y llamá send_chat_message "
     "ya: no vuelvas a pedir el mail. "
-    "Si en el mismo mensaje trae email y texto, llamá la tool de una. "
+    "Si en el mismo mensaje trae contacto y texto, llamá la tool de una. "
     "Si el usuario aún no conectó Google Calendar u otro servicio, "
     "usá get_onboarding_status y start_service_connection para guiarlo paso a paso. "
     "Calendar es obligatorio antes de hablar de agenda o recordatorios. "
@@ -290,7 +293,7 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
 
     def get_chat_messages(contact: str, limit: float = 8) -> str:
         """
-        Lee mensajes recientes de Google Chat con un contacto (email).
+        Lee mensajes recientes de Google Chat con un contacto (nombre o email).
         """
         return google_chat_service.list_chat_messages(
             google_credentials,
@@ -300,12 +303,19 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
 
     def send_chat_message(contact: str, text: str) -> str:
         """
-        Envía un mensaje de Google Chat a un contacto (email) + texto.
+        Envía un mensaje de Google Chat. contact=nombre o email; text=mensaje.
         """
         return google_chat_service.send_chat_message(
             google_credentials,
             contact=contact,
             text=text,
+        )
+
+    def list_chat_contacts(limit: float = 15) -> str:
+        """Lista contactos con los que ya hay Google Chat (DM)."""
+        return google_chat_service.list_chat_contacts(
+            google_credentials,
+            limit=int(limit or 15),
         )
 
     list_description = "Devuelve los próximos eventos de TODOS los calendarios de Google del usuario (no solo el principal)."
@@ -328,17 +338,20 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
         "Usar ante 'mandale un mail a…', 'escribile un correo a…'."
     )
     chat_list_description = (
-        "Lee mensajes recientes de Google Chat con un contacto. "
-        "contact=email obligatorio (ej. ana@gmail.com). "
-        "NO es Gmail. Usar ante 'qué me escribió X en Chat'."
+        "Lee mensajes recientes de Google Chat. "
+        "contact=nombre de Google Contacts/Chat O email. "
+        "NO es Gmail. Usar ante 'qué me escribió Ana en Chat'."
     )
     chat_send_description = (
         "Envía un mensaje por Google Chat (NO Gmail). "
-        "Parámetros OBLIGATORIOS juntos: contact=email del destinatario, "
-        "text=cuerpo del mensaje. "
-        "Si el usuario ya dijo el email antes y ahora solo da el texto, "
-        "reutilizá ese email y llamá esta tool YA. "
-        "Ejemplo: contact='juan@gmail.com', text='Llego en 10'."
+        "contact=nombre O email; text=mensaje. "
+        "Preferí el nombre si el usuario no dicta el mail "
+        "(se busca en Google Contacts y en DMs de Chat). "
+        "Ejemplo: contact='Ana', text='Llego en 10'."
+    )
+    chat_contacts_description = (
+        "Lista con quién ya tenés Google Chat (mensajes directos). "
+        "Usar ante 'quiénes son mis contactos de Chat', 'a quién puedo escribir'."
     )
     if account_label != "default":
         list_description = (
@@ -351,8 +364,9 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
         mail_list_description = f"Lee mails recientes de Gmail de la cuenta '{account_label}'."
         mail_read_description = f"Lee un mail de Gmail de la cuenta '{account_label}'."
         mail_send_description = f"Envía un mail desde Gmail de la cuenta '{account_label}'."
-        chat_list_description = f"Lee Google Chat de la cuenta '{account_label}' con un contacto (email)."
-        chat_send_description = f"Envía Google Chat desde la cuenta '{account_label}' a un contacto (email)."
+        chat_list_description = f"Lee Google Chat de la cuenta '{account_label}' (nombre o email)."
+        chat_send_description = f"Envía Google Chat desde la cuenta '{account_label}' (nombre o email)."
+        chat_contacts_description = f"Lista contactos de Google Chat de la cuenta '{account_label}'."
 
     return [
         StructuredTool.from_function(
@@ -389,6 +403,11 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
             func=send_chat_message,
             name=f"send_chat_message{suffix}",
             description=chat_send_description,
+        ),
+        StructuredTool.from_function(
+            func=list_chat_contacts,
+            name=f"list_chat_contacts{suffix}",
+            description=chat_contacts_description,
         ),
     ]
 

@@ -287,6 +287,7 @@ def test_oauth_authorize_requests_events_scope():
     assert "gmail.send" in url
     assert "chat.spaces" in url
     assert "chat.messages" in url
+    assert "contacts.readonly" in url
 
 
 @pytest.mark.asyncio
@@ -305,6 +306,7 @@ async def test_get_tools_for_user_includes_calendar_tool(db):
     assert "send_email" in names
     assert "get_chat_messages" in names
     assert "send_chat_message" in names
+    assert "list_chat_contacts" in names
 
 
 @pytest.mark.asyncio
@@ -368,7 +370,8 @@ def test_authorize_returns_google_url_with_signed_state(db):
         "https://www.googleapis.com/auth/gmail.readonly "
         "https://www.googleapis.com/auth/gmail.send "
         "https://www.googleapis.com/auth/chat.spaces "
-        "https://www.googleapis.com/auth/chat.messages"
+        "https://www.googleapis.com/auth/chat.messages "
+        "https://www.googleapis.com/auth/contacts.readonly"
     ]
     assert query["redirect_uri"] == [settings.google_redirect_uri]
     assert "code_challenge" not in query  # sin PKCE: el callback no tendría el verifier

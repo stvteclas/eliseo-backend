@@ -16,19 +16,21 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
+from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from sqlalchemy.orm import Session
 
 from app.api.routes.auth import get_current_user
 from app.api.routes.connectors import upsert_user_connector
 from app.core.config import settings
-from app.core.crypto import encrypt
+from app.core.crypto import decrypt, encrypt
 from app.core.database import get_db
 from app.core.oauth_pages import oauth_failure_page, oauth_page
 from app.core.oauth_redirect import safe_app_redirect, with_query
 from app.core.security import create_oauth_state, decode_oauth_state, extract_oauth_app_redirect
 from app.models.google_calendar_credential import GoogleCalendarCredential
 from app.models.user import User
+from app.services import google_chat as google_chat_service
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +51,10 @@ GOOGLE_CALENDAR_SCOPES = [
     # Lectura y envío de correo (misma reconexión OAuth; hace falta Gmail API en Cloud).
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
-    # Google Chat: DM con contactos (hace falta Chat API en Cloud).
+    # Google Chat + Contactos (resolver nombre → email).
     "https://www.googleapis.com/auth/chat.spaces",
     "https://www.googleapis.com/auth/chat.messages",
+    "https://www.googleapis.com/auth/contacts.readonly",
 ]
 SCOPES = GOOGLE_CALENDAR_SCOPES
 
@@ -187,3 +190,42 @@ def callback(
             status_code=302,
         )
     return oauth_page("Listo, ya podés cerrar esta pestaña y volver a Eliseo.")
+
+
+def _google_credentials_for_user(db: Session, user_id: int, account_label: str) -> Credentials | None:
+    credential = (
+        db.query(GoogleCalendarCredential)
+        .filter(
+            GoogleCalendarCredential.user_id == user_id,
+            GoogleCalendarCredential.account_label == account_label,
+        )
+        .first()
+    )
+    if credential is None:
+        return None
+    return Credentials(
+        token=None,
+        refresh_token=decrypt(credential.refresh_token_encrypted),
+        client_id=settings.google_client_id,
+        client_secret=settings.google_client_secret,
+        token_uri="https://oauth2.googleapis.com/token",
+        scopes=GOOGLE_CALENDAR_SCOPES,
+    )
+
+
+@router.get("/chat/updates")
+def chat_updates(
+    since: str | None = Query(default=None),
+    account_label: str = "default",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    Poll de mensajes nuevos en Google Chat (DMs).
+    Sin `since`: inicializa cursor (ahora) sin devolver historial.
+    Con `since`: mensajes entrantes posteriores a ese instante.
+    """
+    creds = _google_credentials_for_user(db, current_user.id, account_label)
+    if creds is None:
+        raise HTTPException(status_code=404, detail="Google no está conectado.")
+    return google_chat_service.poll_incoming_dm_messages(creds, since_iso=since)
