@@ -11,7 +11,7 @@ import pytest
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_eliseo.db")
 
 from app.agents.builtin_tools import BUILTIN_TOOL_NAMES, build_builtin_tools
-from app.agents.client_actions import drain_client_actions, reset_client_actions
+from app.agents.client_actions import drain_client_actions, queue_client_action, reset_client_actions
 from app.core.database import SessionLocal
 from app.models.user import User
 from app.services import calculator as calculator_service
@@ -249,18 +249,78 @@ def test_make_study_summary_requires_material(monkeypatch):
     assert "tema" in study_service.make_study_summary("").lower()
 
 
-def test_play_music_queues_open_url(db):
+def test_play_music_queues_open_url(db, monkeypatch):
     from app.services import music as music_service
 
     user_id = _user(db)
     reset_client_actions()
+    monkeypatch.setattr(
+        music_service,
+        "play_music_plan",
+        lambda query, service="spotify": {
+            "ok": True,
+            "message": "Te pongo Cerati.",
+            "preview_url": "https://example.com/a.mp3",
+            "preview_urls": ["https://example.com/a.mp3", "https://example.com/b.mp3"],
+            "url": None,
+            "url_alt": None,
+            "service": "deezer",
+            "label": "Eliseo",
+        },
+    )
     tools = {t.name: t for t in build_builtin_tools(user_id=user_id, db=db)}
     msg = tools["play_music"].invoke({"query": "Gustavo Cerati", "service": "spotify"})
     actions = drain_client_actions()
-    assert "Spotify" in msg
-    assert actions[0]["type"] == "open_url"
-    assert "open.spotify.com/search" in actions[0]["url"]
+    assert "Cerati" in msg or "pongo" in msg
+    assert actions[0]["type"] == "play_audio"
+    assert "example.com/a.mp3" in actions[0]["url"]
+    assert len(actions[0]["urls"]) == 2
 
-    plan = music_service.play_music_plan("Cerati", service="youtube_music")
-    assert plan["ok"]
-    assert "music.youtube.com" in plan["url"]
+
+def test_play_music_spotify_track_when_api_resolves(db, monkeypatch):
+    from app.services import music as music_service
+
+    user_id = _user(db)
+    reset_client_actions()
+    monkeypatch.setattr(
+        music_service,
+        "_spotify_previews",
+        lambda q, limit=8: {
+            "title": "Crimen",
+            "preview_urls": ["https://example.com/crimen.mp3"],
+            "preview_url": "https://example.com/crimen.mp3",
+            "service": "spotify",
+        },
+    )
+    tools = {t.name: t for t in build_builtin_tools(user_id=user_id, db=db)}
+    msg = tools["play_music"].invoke({"query": "Cerati", "service": "spotify"})
+    actions = drain_client_actions()
+    assert "Crimen" in msg or "pongo" in msg
+    assert actions[0]["type"] == "play_audio"
+
+
+def test_stop_music_queues_action(db):
+    user_id = _user(db)
+    reset_client_actions()
+    tools = {t.name: t for t in build_builtin_tools(user_id=user_id, db=db)}
+    assert "stop_music" in tools
+    msg = tools["stop_music"].invoke({})
+    actions = drain_client_actions()
+    assert "paus" in msg.lower() or "música" in msg.lower()
+    assert actions == [{"type": "stop_audio"}]
+
+
+def test_client_actions_survive_worker_thread():
+    """LangGraph corre tools sync en otro hilo; las actions no se pueden perder."""
+    import threading
+
+    reset_client_actions()
+
+    def worker():
+        queue_client_action({"type": "open_url", "url": "https://example.com"})
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+    actions = drain_client_actions()
+    assert actions == [{"type": "open_url", "url": "https://example.com"}]

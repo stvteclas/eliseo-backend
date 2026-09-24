@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     # "Directions API" y crear una API key restringida.
     google_maps_api_key: str = ""
 
+    # Spotify (opcional): Client ID/Secret de una app en developer.spotify.com
+    # con Client Credentials. Sirve para resolver playlist/track y abrir reproducción
+    # real en el teléfono (sin login del usuario en Eliseo).
+    spotify_client_id: str = ""
+    spotify_client_secret: str = ""
+    # YouTube Data API (opcional). Si vacío, se intenta google_maps_api_key
+    # (hace falta habilitar YouTube Data API v3 en Cloud Console).
+    youtube_api_key: str = ""
+
     # Solo para depurar los callbacks OAuth: muestra en la página el error que devolvió
     # el proveedor (Mercado Pago). Dejar en false salvo mientras se investiga una falla.
     oauth_debug: bool = False
