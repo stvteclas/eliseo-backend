@@ -55,26 +55,44 @@ _ensure_translator_columns()
 
 
 def _ensure_prefs_and_notes_columns() -> None:
+    """Agrega columnas de prefs/notas. Boolean defaults con FALSE (Postgres)."""
     inspector = inspect(engine)
     tables = inspector.get_table_names()
+    bool_false = "FALSE"  # Postgres; SQLite también lo acepta
     if "users" in tables:
         columns = {col["name"] for col in inspector.get_columns("users")}
         with engine.begin() as conn:
             if "wake_name" not in columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN wake_name VARCHAR"))
             if "quiet_mode" not in columns:
-                conn.execute(text("ALTER TABLE users ADD COLUMN quiet_mode BOOLEAN DEFAULT 0 NOT NULL"))
+                conn.execute(
+                    text(
+                        f"ALTER TABLE users ADD COLUMN quiet_mode BOOLEAN DEFAULT {bool_false} NOT NULL"
+                    )
+                )
             if "confirm_sends" not in columns:
-                conn.execute(text("ALTER TABLE users ADD COLUMN confirm_sends BOOLEAN DEFAULT 0 NOT NULL"))
+                conn.execute(
+                    text(
+                        f"ALTER TABLE users ADD COLUMN confirm_sends BOOLEAN DEFAULT {bool_false} NOT NULL"
+                    )
+                )
             if "meeting_until" not in columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN meeting_until TIMESTAMP"))
             if "speak_slow" not in columns:
-                conn.execute(text("ALTER TABLE users ADD COLUMN speak_slow BOOLEAN DEFAULT 0 NOT NULL"))
+                conn.execute(
+                    text(
+                        f"ALTER TABLE users ADD COLUMN speak_slow BOOLEAN DEFAULT {bool_false} NOT NULL"
+                    )
+                )
     if "notes" in tables:
         ncols = {col["name"] for col in inspector.get_columns("notes")}
         if "done" not in ncols:
             with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE notes ADD COLUMN done BOOLEAN DEFAULT 0 NOT NULL"))
+                conn.execute(
+                    text(
+                        f"ALTER TABLE notes ADD COLUMN done BOOLEAN DEFAULT {bool_false} NOT NULL"
+                    )
+                )
 
 
 _ensure_prefs_and_notes_columns()
