@@ -15,9 +15,13 @@ from sqlalchemy.orm import Session
 
 from app.agents.client_actions import queue_client_action
 from app.services import calculator as calculator_service
+from app.services import digest as digest_service
+from app.services import habits as habits_service
 from app.services import music as music_service
 from app.services import news as news_service
 from app.services import notes as notes_service
+from app.services import pending_confirm
+from app.services import prefs as prefs_service
 from app.services import study as study_service
 from app.services import traffic as traffic_service
 from app.services import translate as translate_service
@@ -33,6 +37,7 @@ BUILTIN_TOOL_NAMES = [
     "list_notes",
     "remove_note",
     "clear_notes",
+    "check_off_note",
     "calculate",
     "convert_currency",
     "get_travel_time",
@@ -43,9 +48,26 @@ BUILTIN_TOOL_NAMES = [
     "schedule_local_reminder",
     "call_contact",
     "get_daily_briefing",
+    "get_today_overview",
+    "get_inbox_digest",
     "make_study_summary",
     "play_music",
     "stop_music",
+    "set_wake_name",
+    "set_quiet_mode",
+    "set_confirm_sends",
+    "start_meeting_mode",
+    "stop_meeting_mode",
+    "mark_habit_done",
+    "habit_status",
+    "start_pomodoro",
+    "start_breathing",
+    "confirm_pending_action",
+    "cancel_pending_action",
+    "repeat_last",
+    "speak_slower",
+    "speak_normal",
+    "broadcast_message",
     "get_onboarding_status",
     "start_service_connection",
 ]
@@ -146,6 +168,12 @@ def build_builtin_tools(
         if user_id is None or db is None:
             return "No pude vaciar la lista ahora."
         return notes_service.clear_notes(db, user_id, list_name)
+
+    def check_off_note(text: str, list_name: str = "compras") -> str:
+        """Tacha un ítem de la lista de compras / encargos."""
+        if user_id is None or db is None:
+            return "No pude tachar el ítem ahora."
+        return notes_service.check_off_note(db, user_id, text, list_name)
 
     def calculate(expression: str) -> str:
         """Calcula una expresión (ej. '12*15', '15% de 2400')."""
@@ -254,28 +282,179 @@ def build_builtin_tools(
         queue_client_action({"type": "call_contact", "query": query})
         return f"Busco a {query} en tus contactos y abro el teléfono."
 
-    def get_daily_briefing(city: str = "") -> str:
+    def get_daily_briefing(city: str = "", work_destination: str = "") -> str:
         """
-        Resumen del día: hora, clima y próximos eventos del calendario si hay.
+        Resumen del día: hora, clima, tráfico opcional al laburo y agenda.
+        work_destination ej. 'oficina Microcentro' si querés tráfico.
         """
+        if user_id is not None and db is not None:
+            return digest_service.today_overview(
+                user_id, db, latitude, longitude, work_destination=work_destination
+            )
         parts = [f"Ahora es {_format_argentina_now()}."]
         city_arg = city.strip() or None
         parts.append(get_weather_report(city=city_arg, latitude=latitude, longitude=longitude))
-
-        if user_id is not None and db is not None:
-            try:
-                from app.agents.orchestrator import build_calendar_tools
-
-                cal_tools = build_calendar_tools(user_id, db)
-                by_name = {t.name: t for t in cal_tools}
-                upcoming = by_name.get("get_upcoming_calendar_events")
-                if upcoming is not None:
-                    parts.append(upcoming.invoke({}))
-                else:
-                    parts.append("No tenés Google Calendar conectado para ver la agenda.")
-            except Exception:
-                parts.append("No pude leer la agenda ahora.")
         return " ".join(parts)
+
+    def get_today_overview(work_destination: str = "") -> str:
+        """Qué tenés hoy: clima, agenda, mails sin leer y tráfico opcional."""
+        if user_id is None or db is None:
+            return "No pude armar el resumen de hoy."
+        return digest_service.today_overview(
+            user_id, db, latitude, longitude, work_destination=work_destination
+        )
+
+    def get_inbox_digest() -> str:
+        """Resumen de mails sin leer y contactos de Chat."""
+        if user_id is None or db is None:
+            return "No pude mirar la bandeja."
+        return digest_service.inbox_digest(user_id, db)
+
+    def set_wake_name(name: str) -> str:
+        """Cambia cómo te gusta llamarme (wake word). La app sigue llamándose Eliseo."""
+        if user_id is None or db is None:
+            return "No pude guardar el nombre."
+        return prefs_service.set_wake_name(db, user_id, name)
+
+    def set_quiet_mode(enabled: bool = True) -> str:
+        """Modo silencio: solo respondo si me llamás por nombre."""
+        if user_id is None or db is None:
+            return "No pude cambiar el modo silencio."
+        return prefs_service.set_quiet_mode(db, user_id, bool(enabled))
+
+    def set_confirm_sends(enabled: bool = True) -> str:
+        """Pide 'dale' antes de mandar mails, chats o pagos."""
+        if user_id is None or db is None:
+            return "No pude cambiar la confirmación."
+        return prefs_service.set_confirm_sends(db, user_id, bool(enabled))
+
+    def start_meeting_mode(minutes: float = 60) -> str:
+        """Silencia avisos proactivos por N minutos."""
+        if user_id is None or db is None:
+            return "No pude activar modo reunión."
+        return prefs_service.start_meeting_mode(db, user_id, minutes)
+
+    def stop_meeting_mode() -> str:
+        """Sale del modo reunión."""
+        if user_id is None or db is None:
+            return "No pude salir del modo reunión."
+        return prefs_service.stop_meeting_mode(db, user_id)
+
+    def mark_habit_done(name: str) -> str:
+        """Marca un hábito de hoy (agua, pastilla, ejercicio…)."""
+        if user_id is None or db is None:
+            return "No pude marcar el hábito."
+        return habits_service.mark_habit_done(db, user_id, name)
+
+    def habit_status(name: str = "") -> str:
+        """Consulta hábitos de hoy. name opcional."""
+        if user_id is None or db is None:
+            return "No pude leer hábitos."
+        return habits_service.habit_status(db, user_id, name)
+
+    def start_pomodoro(minutes: float = 25) -> str:
+        """Temporizador Pomodoro (default 25 min)."""
+        mins = max(1, min(int(minutes or 25), 90))
+        return set_timer(minutes=float(mins), seconds=0, label="Pomodoro")
+
+    def start_breathing(minutes: float = 2) -> str:
+        """Pausa de respiración guiada (default 2 min) + timer."""
+        mins = max(1, min(int(minutes or 2), 10))
+        set_timer(minutes=float(mins), seconds=0, label="Respiración")
+        return (
+            f"Vamos {mins} minuto{'s' if mins != 1 else ''} de respiración: "
+            "inhalá por la nariz contando cuatro, sostené cuatro, exhalá seis. "
+            "Te aviso cuando termine."
+        )
+
+    def confirm_pending_action() -> str:
+        """Confirma la acción pendiente (después de 'dale')."""
+        if user_id is None:
+            return "No hay usuario."
+        return pending_confirm.confirm_pending(user_id)
+
+    def cancel_pending_action() -> str:
+        """Cancela la acción pendiente."""
+        if user_id is None:
+            return "No hay usuario."
+        return pending_confirm.cancel_pending(user_id)
+
+    def repeat_last() -> str:
+        """Pide a la app repetir la última respuesta."""
+        queue_client_action({"type": "repeat_last"})
+        return "Repito."
+
+    def speak_slower() -> str:
+        """Habla más despacio."""
+        if user_id is not None and db is not None:
+            from app.models.user import User
+
+            user = db.query(User).filter(User.id == user_id).first()
+            if user is not None:
+                user.speak_slow = True
+                db.add(user)
+                db.commit()
+        queue_client_action({"type": "speak_slow", "enabled": True})
+        return "Listo, hablo más despacio."
+
+    def speak_normal() -> str:
+        """Vuelve a la velocidad normal de voz."""
+        if user_id is not None and db is not None:
+            from app.models.user import User
+
+            user = db.query(User).filter(User.id == user_id).first()
+            if user is not None:
+                user.speak_slow = False
+                db.add(user)
+                db.commit()
+        queue_client_action({"type": "speak_slow", "enabled": False})
+        return "Listo, velocidad normal."
+
+    def broadcast_message(contacts: str, text: str, channel: str = "chat") -> str:
+        """
+        Manda el mismo mensaje a varios contactos.
+        contacts: nombres o emails separados por coma.
+        channel: chat | email
+        """
+        if user_id is None or db is None:
+            return "No pude enviar ahora."
+        body = (text or "").strip()
+        if not body:
+            return "Decime el texto del mensaje."
+        raw_contacts = [c.strip() for c in (contacts or "").split(",") if c.strip()]
+        if not raw_contacts:
+            return "Decime a quién: nombres o emails separados por coma."
+        ch = (channel or "chat").strip().lower()
+        if ch not in {"chat", "email", "mail", "gmail"}:
+            ch = "chat"
+
+        def _runner() -> str:
+            from app.agents.orchestrator import build_calendar_tools
+
+            tools = {t.name: t for t in build_calendar_tools(user_id, db)}
+            results = []
+            if ch == "chat":
+                send = tools.get("send_chat_message")
+                if send is None:
+                    return "Google Chat no está conectado."
+                for c in raw_contacts:
+                    results.append(send.invoke({"contact": c, "text": body}))
+            else:
+                send = tools.get("send_email")
+                if send is None:
+                    return "Gmail no está conectado."
+                for c in raw_contacts:
+                    results.append(send.invoke({"to": c, "subject": "Mensaje", "body": body}))
+            return " ".join(results)
+
+        from app.models.user import User
+
+        user = db.query(User).filter(User.id == user_id).first()
+        label = f"mandar a {', '.join(raw_contacts)} por {ch}"
+        if user is not None and user.confirm_sends:
+            pending_confirm.set_pending(user_id, label, _runner)
+            return f"¿{label}? Decí dale para confirmar o cancelá."
+        return _runner()
 
     def make_study_summary(material: str, mode: str = "resumen", depth: str = "medio") -> str:
         """
@@ -387,6 +566,11 @@ def build_builtin_tools(
             description="Vacía por completo una lista.",
         ),
         StructuredTool.from_function(
+            func=check_off_note,
+            name="check_off_note",
+            description="Tacha un ítem de compras/encargos. text=qué tachar; list_name default compras.",
+        ),
+        StructuredTool.from_function(
             func=calculate,
             name="calculate",
             description="Calcula una expresión aritmética o un porcentaje (ej. '15% de 2400').",
@@ -445,9 +629,20 @@ def build_builtin_tools(
             func=get_daily_briefing,
             name="get_daily_briefing",
             description=(
-                "Resumen del día: hora + clima + próximos eventos. "
-                "Usar ante 'buenos días', 'resumen del día', etc."
+                "Resumen del día: hora, clima, agenda, mails y tráfico opcional. "
+                "work_destination opcional (ej. 'oficina'). "
+                "Usar ante 'buenos días', 'resumen del día'."
             ),
+        ),
+        StructuredTool.from_function(
+            func=get_today_overview,
+            name="get_today_overview",
+            description="Qué tengo hoy: clima + agenda + mails. work_destination opcional para tráfico.",
+        ),
+        StructuredTool.from_function(
+            func=get_inbox_digest,
+            name="get_inbox_digest",
+            description="Resumen de qué me escribieron (mails sin leer + Chat). Usar ante 'qué me escribieron'.",
         ),
         StructuredTool.from_function(
             func=make_study_summary,
@@ -476,6 +671,88 @@ def build_builtin_tools(
                 "Intenta parar la música. Corta audio de Eliseo; "
                 "si suena en Spotify/YouTube hay que pausar ahí. "
                 "Usar ante 'pará la música', 'stop', 'pausá'."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=set_wake_name,
+            name="set_wake_name",
+            description=(
+                "Cambia el nombre con el que te llaman (wake word). "
+                "Usar ante 'llamame Max', 'quiero llamarte Sofía'. La app sigue siendo Eliseo."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=set_quiet_mode,
+            name="set_quiet_mode",
+            description="Modo silencio on/off. enabled=true solo responde si lo llaman por nombre.",
+        ),
+        StructuredTool.from_function(
+            func=set_confirm_sends,
+            name="set_confirm_sends",
+            description="Pide 'dale' antes de mails/chats/pagos. enabled=true|false.",
+        ),
+        StructuredTool.from_function(
+            func=start_meeting_mode,
+            name="start_meeting_mode",
+            description="Silencia avisos N minutos (default 60). Usar ante 'modo reunión'.",
+        ),
+        StructuredTool.from_function(
+            func=stop_meeting_mode,
+            name="stop_meeting_mode",
+            description="Sale del modo reunión.",
+        ),
+        StructuredTool.from_function(
+            func=mark_habit_done,
+            name="mark_habit_done",
+            description="Marca hábito de hoy: agua, pastilla, ejercicio…",
+        ),
+        StructuredTool.from_function(
+            func=habit_status,
+            name="habit_status",
+            description="Consulta hábitos. name opcional.",
+        ),
+        StructuredTool.from_function(
+            func=start_pomodoro,
+            name="start_pomodoro",
+            description="Temporizador Pomodoro. minutes default 25.",
+        ),
+        StructuredTool.from_function(
+            func=start_breathing,
+            name="start_breathing",
+            description="Pausa de respiración guiada. minutes default 2.",
+        ),
+        StructuredTool.from_function(
+            func=confirm_pending_action,
+            name="confirm_pending_action",
+            description="Confirma acción pendiente. Usar cuando el usuario dice 'dale', 'sí, mandalo'.",
+        ),
+        StructuredTool.from_function(
+            func=cancel_pending_action,
+            name="cancel_pending_action",
+            description="Cancela la acción pendiente. Usar ante 'cancelá', 'no'.",
+        ),
+        StructuredTool.from_function(
+            func=repeat_last,
+            name="repeat_last",
+            description="Repite la última respuesta. Usar ante 'repetí', 'qué dijiste'.",
+        ),
+        StructuredTool.from_function(
+            func=speak_slower,
+            name="speak_slower",
+            description="Habla más despacio. Usar ante 'más despacio', 'hablá lento'.",
+        ),
+        StructuredTool.from_function(
+            func=speak_normal,
+            name="speak_normal",
+            description="Vuelve a velocidad normal de voz.",
+        ),
+        StructuredTool.from_function(
+            func=broadcast_message,
+            name="broadcast_message",
+            description=(
+                "Manda el mismo texto a varios contactos. "
+                "contacts=nombres/emails separados por coma; text=mensaje; "
+                "channel=chat|email. Si confirm_sends está on, pide dale."
             ),
         ),
         StructuredTool.from_function(

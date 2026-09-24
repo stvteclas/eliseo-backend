@@ -7,6 +7,7 @@ from app.core.database import Base, engine
 from app.models import (  # noqa: F401 — necesario para que create_all vea los modelos
     connector,
     google_calendar_credential,
+    habit,
     mercadopago_credential,
     note,
     teams_calendar_credential,
@@ -50,6 +51,32 @@ def _ensure_translator_columns() -> None:
 
 
 _ensure_translator_columns()
+
+
+def _ensure_prefs_and_notes_columns() -> None:
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+    if "users" in tables:
+        columns = {col["name"] for col in inspector.get_columns("users")}
+        with engine.begin() as conn:
+            if "wake_name" not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN wake_name VARCHAR"))
+            if "quiet_mode" not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN quiet_mode BOOLEAN DEFAULT 0 NOT NULL"))
+            if "confirm_sends" not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN confirm_sends BOOLEAN DEFAULT 0 NOT NULL"))
+            if "meeting_until" not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN meeting_until TIMESTAMP"))
+            if "speak_slow" not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN speak_slow BOOLEAN DEFAULT 0 NOT NULL"))
+    if "notes" in tables:
+        ncols = {col["name"] for col in inspector.get_columns("notes")}
+        if "done" not in ncols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE notes ADD COLUMN done BOOLEAN DEFAULT 0 NOT NULL"))
+
+
+_ensure_prefs_and_notes_columns()
 
 app.include_router(health.router, tags=["health"])
 app.include_router(auth.router)

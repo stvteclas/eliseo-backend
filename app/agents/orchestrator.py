@@ -48,15 +48,23 @@ SYSTEM_PROMPT_TEMPLATE = (
     "Nunca uses emojis, emoticones ni sus nombres (nada de blush, smile, etc.): "
     "solo texto hablable. "
     "Las herramientas son para datos o acciones externas "
-    "(clima, hora, calendario, mails, Google Chat, pagos, notas, cálculos, tráfico, viaje, "
-    "noticias, traducción, modo traductor, temporizador, avisos, contactos, "
-    "resumen del día, resúmenes de estudio, música, conexiones de servicios). "
+    "(clima, hora, calendario, mails, Google Chat, pagos, notas, compras, hábitos, "
+    "cálculos, tráfico, viaje, noticias, traducción, modo traductor, temporizador, "
+    "pomodoro, respiración, avisos, contactos, resumen del día, bandeja, estudio, "
+    "música, nombre con el que te llaman, modo silencio, confirmación dale, "
+    "modo reunión, repetir, hablar despacio, conexiones de servicios). "
     "Si preguntan por tráfico, demora, cuánto tardan o cómo está el camino "
     "hacia un lugar, usá get_travel_time (con GPS si no dan origen). "
     "Si piden estudiar, resumir para un examen, fichas o que los pregunte "
     "sobre un tema o un texto, usá make_study_summary. "
     "Si piden poner música, usá play_music (abre Spotify o YouTube Music en el teléfono). "
     "Si piden parar la música, usá stop_music. "
+    "Si piden llamarme de otra forma, usá set_wake_name. "
+    "Si dicen dale/confirmá y hay algo pendiente, usá confirm_pending_action. "
+    "Si cancelan, usá cancel_pending_action. "
+    "Si piden 'qué me escribieron', usá get_inbox_digest. "
+    "Si piden 'qué tengo hoy' o buenos días, usá get_today_overview o get_daily_briefing. "
+    "Para lista de compras usá add_note/list_notes/check_off_note con list_name=compras. "
     "Si piden leer el correo, mails o bandeja de entrada, usá get_recent_emails "
     "o read_email; si piden mandar un mail, usá send_email "
     "(hace falta haber reconectado Google con permiso de Gmail). "
@@ -87,8 +95,10 @@ PERSONA_DISPLAY_NAME = {
 }
 
 
-def system_prompt_for_persona(persona: str) -> str:
-    name = PERSONA_DISPLAY_NAME.get(persona, PERSONA_DISPLAY_NAME["elisse"])
+def system_prompt_for_persona(persona: str, display_name: str | None = None) -> str:
+    name = (display_name or "").strip() or PERSONA_DISPLAY_NAME.get(
+        persona, PERSONA_DISPLAY_NAME["elisse"]
+    )
     return SYSTEM_PROMPT_TEMPLATE.format(name=name)
 
 
@@ -285,12 +295,26 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
         """
         Envía un mail. to=email del destinatario, subject=asunto, body=texto.
         """
-        return gmail_service.send_email(
-            google_credentials,
-            to=to,
-            subject=subject,
-            body=body,
-        )
+        def _send() -> str:
+            return gmail_service.send_email(
+                google_credentials,
+                to=to,
+                subject=subject,
+                body=body,
+            )
+
+        from app.models.user import User
+        from app.services import pending_confirm
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is not None and user.confirm_sends:
+            pending_confirm.set_pending(
+                user_id,
+                f"mandar mail a {to} con asunto {subject}",
+                _send,
+            )
+            return f"¿Mando el mail a {to}? Decí dale para confirmar o cancelá."
+        return _send()
 
     def get_chat_messages(contact: str, limit: float = 8) -> str:
         """
@@ -306,11 +330,26 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
         """
         Envía un mensaje de Google Chat. contact=nombre o email; text=mensaje.
         """
-        return google_chat_service.send_chat_message(
-            google_credentials,
-            contact=contact,
-            text=text,
-        )
+        def _send() -> str:
+            return google_chat_service.send_chat_message(
+                google_credentials,
+                contact=contact,
+                text=text,
+            )
+
+        from app.models.user import User
+        from app.services import pending_confirm
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is not None and user.confirm_sends:
+            preview = (text or "")[:60]
+            pending_confirm.set_pending(
+                user_id,
+                f"mandar Chat a {contact}: {preview}",
+                _send,
+            )
+            return f"¿Le mando a {contact} por Chat? Decí dale para confirmar o cancelá."
+        return _send()
 
     def list_chat_contacts(limit: float = 15) -> str:
         """Lista contactos con los que ya hay Google Chat (DM)."""
@@ -459,32 +498,46 @@ def build_mercadopago_tool(user_id: int, db: Session, account_label: str = "defa
         if not math.isfinite(amount) or amount <= 0:
             return "El monto del link de pago tiene que ser mayor a cero."
 
-        try:
-            result = (
-                mercadopago.SDK(access_token)
-                .preference()
-                .create(
-                    {
-                        "items": [
-                            {
-                                "title": title,
-                                "description": description,
-                                "quantity": 1,
-                                "currency_id": "ARS",
-                                "unit_price": amount,
-                            }
-                        ]
-                    }
+        def _create() -> str:
+            try:
+                result = (
+                    mercadopago.SDK(access_token)
+                    .preference()
+                    .create(
+                        {
+                            "items": [
+                                {
+                                    "title": title,
+                                    "description": description,
+                                    "quantity": 1,
+                                    "currency_id": "ARS",
+                                    "unit_price": amount,
+                                }
+                            ]
+                        }
+                    )
                 )
-            )
-        except Exception:
+            except Exception:
+                return "No pude crear el link de pago en este momento."
+
+            if result.get("status") in (200, 201):
+                return result["response"]["init_point"]
+            if result.get("status") in (401, 403):
+                return reconnect_message
             return "No pude crear el link de pago en este momento."
 
-        if result.get("status") in (200, 201):
-            return result["response"]["init_point"]  # cuenta real del usuario: init_point, no sandbox_init_point
-        if result.get("status") in (401, 403):
-            return reconnect_message
-        return "No pude crear el link de pago en este momento."
+        from app.models.user import User
+        from app.services import pending_confirm
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is not None and user.confirm_sends:
+            pending_confirm.set_pending(
+                user_id,
+                f"crear link de pago de {amount} por {title}",
+                _create,
+            )
+            return f"¿Creo el link de pago de {amount} por {title}? Decí dale o cancelá."
+        return _create()
 
     description = f"Crea un link de pago de Mercado Pago (en pesos) que cobra a favor{account_note or ' del usuario'} y devuelve la URL."
 
@@ -618,6 +671,7 @@ async def _build_agent(
     user_id: int,
     db: Session,
     persona: str = "elisse",
+    display_name: str | None = None,
     latitude: float | None = None,
     longitude: float | None = None,
 ):
@@ -629,7 +683,9 @@ async def _build_agent(
         api_key=settings.anthropic_api_key,
     )
 
-    return create_react_agent(model, tools, prompt=system_prompt_for_persona(persona))
+    return create_react_agent(
+        model, tools, prompt=system_prompt_for_persona(persona, display_name=display_name)
+    )
 
 
 async def handle_user_message(
@@ -654,6 +710,9 @@ async def handle_user_message(
 
     user = db.query(User).filter(User.id == user_id).first()
     persona = user.persona if user is not None else "elisse"
+    from app.services import prefs as prefs_service
+
+    display_name = prefs_service.display_name_for(user, persona)
 
     reset_client_actions()
 
@@ -681,7 +740,12 @@ async def handle_user_message(
         return translated, [], speak_lang
 
     agent = await _build_agent(
-        user_id, db, persona=persona, latitude=latitude, longitude=longitude
+        user_id,
+        db,
+        persona=persona,
+        display_name=display_name,
+        latitude=latitude,
+        longitude=longitude,
     )
     prior = memory.merge_history(user_id, history)
     agent_messages = memory.build_agent_messages(prior, message)

@@ -211,8 +211,8 @@ async def _synthesize_deepgram(text: str, model: str) -> bytes:
     return response.content
 
 
-async def _synthesize_edge(text: str, voice: str) -> bytes:
-    communicate = edge_tts.Communicate(text, voice)
+async def _synthesize_edge(text: str, voice: str, rate: str = "+0%") -> bytes:
+    communicate = edge_tts.Communicate(text, voice, rate=rate)
     chunks: list[bytes] = []
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
@@ -226,6 +226,7 @@ async def synthesize_speech(
     text: str,
     persona: str = DEFAULT_PERSONA,
     language: str | None = None,
+    slow: bool = False,
 ) -> bytes:
     spoken = text_for_speech(text)
     persona_key = persona if persona in ("eliseo", "elisse") else DEFAULT_PERSONA
@@ -239,7 +240,8 @@ async def synthesize_speech(
 
     voices = EDGE_TTS_VOICE.get(lang) or EDGE_TTS_VOICE.get("ru")
     voice = (voices or {}).get(persona_key) or "ru-RU-DmitryNeural"
+    rate = "-25%" if slow else "+0%"
     try:
-        return await _synthesize_edge(spoken, voice)
+        return await _synthesize_edge(spoken, voice, rate=rate)
     except Exception:
         return await _synthesize_deepgram(spoken, tts_model_for_persona(persona_key))

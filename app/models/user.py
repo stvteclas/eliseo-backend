@@ -6,7 +6,7 @@ como tablas separadas más adelante, relacionadas a este user_id.
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlalchemy.orm import Mapped
 
 from app.core.database import Base
@@ -20,6 +20,16 @@ class User(Base):
     hashed_password: Mapped[str] = Column(String, nullable=False)
     # eliseo = voz masculina latina (default); elisse = voz femenina
     persona: Mapped[str] = Column(String, nullable=False, default="eliseo")
+    # Cómo te gusta llamarlo (wake word). Null = Eliseo/Elisse según persona.
+    wake_name: Mapped[str | None] = Column(String, nullable=True, default=None)
+    # Solo responde / avisa si lo llamás por nombre.
+    quiet_mode: Mapped[bool] = Column(Boolean, nullable=False, default=False)
+    # Pedir «dale» antes de mandar mail / chat / pago.
+    confirm_sends: Mapped[bool] = Column(Boolean, nullable=False, default=False)
+    # Hasta cuándo silenciar avisos proactivos (UTC).
+    meeting_until: Mapped[datetime | None] = Column(DateTime, nullable=True, default=None)
+    # TTS un poco más lento.
+    speak_slow: Mapped[bool] = Column(Boolean, nullable=False, default=False)
     # Modo traductor bidireccional: códigos ISO (es, ru, en...). Null = apagado.
     translator_lang_a: Mapped[str | None] = Column(String, nullable=True, default=None)
     translator_lang_b: Mapped[str | None] = Column(String, nullable=True, default=None)

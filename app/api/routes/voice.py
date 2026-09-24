@@ -6,6 +6,7 @@ Endpoints de voz (HU-T07): transcribir, sintetizar, y un turno completo
 from __future__ import annotations
 
 import base64
+import re
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel, Field
@@ -15,6 +16,7 @@ from app.agents.orchestrator import ToolServerUnavailable, handle_user_message
 from app.api.routes.auth import get_current_user
 from app.core.database import get_db
 from app.models.user import User
+from app.services import prefs as prefs_service
 from app.services.voice import synthesize_speech, transcribe_audio
 
 router = APIRouter(prefix="/voice", tags=["voice"])
@@ -73,6 +75,7 @@ async def speak(
             data.text,
             persona=current_user.persona,
             language=data.language,
+            slow=bool(getattr(current_user, "speak_slow", False)),
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
@@ -114,9 +117,39 @@ async def voice_turn(
     if not transcript:
         return TurnResponse(transcript="", reply="", audio_base64="")
 
+    # Modo silencio: sin nombre de activación, no correr el agente (evita side-effects).
+    effective = transcript
+    if bool(getattr(current_user, "quiet_mode", False)):
+        names = prefs_service.wake_names_for(current_user)
+        folded = (
+            transcript.lower()
+            .replace("á", "a")
+            .replace("é", "e")
+            .replace("í", "i")
+            .replace("ó", "o")
+            .replace("ú", "u")
+            .replace("ü", "u")
+            .replace("ñ", "n")
+        )
+        woke = any(n and n in folded for n in names)
+        if not woke:
+            return TurnResponse(transcript=transcript, reply="", audio_base64="")
+        for n in names:
+            if not n:
+                continue
+            effective = re.sub(
+                rf"\b{re.escape(n)}\b[,:]?\s*",
+                "",
+                effective,
+                count=1,
+                flags=re.IGNORECASE,
+            ).strip()
+        if not effective:
+            effective = "Decime"
+
     try:
         reply, actions, speak_language = await handle_user_message(
-            transcript,
+            effective,
             current_user.id,
             db,
             latitude=latitude,
@@ -135,6 +168,7 @@ async def voice_turn(
             reply,
             persona=current_user.persona,
             language=speak_language,
+            slow=bool(getattr(current_user, "speak_slow", False)),
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))

@@ -10,6 +10,7 @@ import pytest
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_eliseo.db")
 
+from app.main import app  # noqa: F401 — create_all + migraciones de columnas
 from app.agents.builtin_tools import BUILTIN_TOOL_NAMES, build_builtin_tools
 from app.agents.client_actions import drain_client_actions, queue_client_action, reset_client_actions
 from app.core.database import SessionLocal
@@ -323,3 +324,100 @@ def test_client_actions_survive_worker_thread():
     t.join()
     actions = drain_client_actions()
     assert actions == [{"type": "open_url", "url": "https://example.com"}]
+
+
+def test_prefs_wake_quiet_meeting_confirm(db):
+    from app.services import prefs as prefs_service
+
+    user_id = _user(db)
+    assert "Perfecto" in prefs_service.set_wake_name(db, user_id, "Max")
+    user = db.query(User).filter(User.id == user_id).first()
+    assert prefs_service.display_name_for(user) == "Max"
+    assert "max" in prefs_service.wake_names_for(user)
+    assert "silencio" in prefs_service.set_quiet_mode(db, user_id, True).lower()
+    assert "dale" in prefs_service.set_confirm_sends(db, user_id, True).lower()
+    assert "reunión" in prefs_service.start_meeting_mode(db, user_id, 30).lower()
+    db.refresh(user)
+    assert prefs_service.is_meeting_mode(user) is True
+    assert "salí" in prefs_service.stop_meeting_mode(db, user_id).lower()
+    db.refresh(user)
+    assert prefs_service.is_meeting_mode(user) is False
+
+
+def test_habits_mark_and_status(db):
+    from app.services import habits as habits_service
+
+    user_id = _user(db)
+    msg = habits_service.mark_habit_done(db, user_id, "agua")
+    assert "agua" in msg.lower()
+    assert "racha" in msg.lower()
+    again = habits_service.mark_habit_done(db, user_id, "agua")
+    assert "ya marcaste" in again.lower()
+    status = habits_service.habit_status(db, user_id, "agua")
+    assert "hecho" in status.lower() or "marcado" in status.lower()
+
+
+def test_notes_check_off_and_list_tag(db):
+    user_id = _user(db)
+    notes_service.add_note(db, user_id, "leche", "compras")
+    notes_service.add_note(db, user_id, "llamá a mamá", "ideas")
+    assert "taché" in notes_service.check_off_note(db, user_id, "leche", "compras").lower()
+    listed = notes_service.list_notes(db, user_id, "compras")
+    assert "leche" in listed.lower()
+    assert "✓" in listed
+    ideas = notes_service.list_notes(db, user_id, "ideas")
+    assert "mamá" in ideas.lower()
+
+
+def test_pending_confirm_dale(db):
+    from app.services import pending_confirm
+
+    user_id = _user(db)
+    called = {"ok": False}
+
+    def runner():
+        called["ok"] = True
+        return "Mandado."
+
+    pending_confirm.set_pending(user_id, "mail a Ana", runner)
+    assert pending_confirm.get_pending_label(user_id) == "mail a Ana"
+    assert pending_confirm.confirm_pending(user_id) == "Mandado."
+    assert called["ok"] is True
+    assert "nada pendiente" in pending_confirm.confirm_pending(user_id).lower()
+
+
+def test_new_feature_tools_registered(db):
+    user_id = _user(db)
+    tools = {t.name: t for t in build_builtin_tools(user_id=user_id, db=db)}
+    for name in (
+        "set_wake_name",
+        "set_quiet_mode",
+        "set_confirm_sends",
+        "start_meeting_mode",
+        "stop_meeting_mode",
+        "get_today_overview",
+        "get_inbox_digest",
+        "start_pomodoro",
+        "start_breathing",
+        "confirm_pending_action",
+        "repeat_last",
+        "speak_slower",
+        "broadcast_message",
+        "check_off_note",
+        "mark_habit_done",
+    ):
+        assert name in tools, name
+
+
+def test_pomodoro_and_repeat_queue_actions(db):
+    user_id = _user(db)
+    reset_client_actions()
+    tools = {t.name: t for t in build_builtin_tools(user_id=user_id, db=db)}
+    tools["start_pomodoro"].invoke({"minutes": 25})
+    tools["repeat_last"].invoke({})
+    tools["speak_slower"].invoke({})
+    actions = drain_client_actions()
+    types = [a["type"] for a in actions]
+    assert "timer" in types or "local_notification" in types
+    assert "repeat_last" in types
+    assert "speak_slow" in types
