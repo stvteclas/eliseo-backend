@@ -77,13 +77,14 @@ SYSTEM_PROMPT_TEMPLATE = (
     "Google Chat NO es Gmail: no uses send_email para un Chat. "
     "Google Chat NO es Telegram: para Telegram usá connect_telegram / "
     "confirm_telegram_code / get_telegram_messages / send_telegram_message. "
-    "Si piden conectar Telegram, pedí el número con código de país y usá "
-    "connect_telegram; cuando dicten el código, confirm_telegram_code con "
-    "los dígitos (o las palabras uno dos tres…); "
-    "si pide contraseña de dos pasos, confirm_telegram_password. "
-    "Si el código falla, NO pidas otro de inmediato: pedí que lo dicten "
-    "otra vez dígito por dígito. Solo usá connect_telegram de nuevo si "
-    "dijeron que el código venció. "
+    "Si piden conectar Telegram: mirá el Estado Telegram del system prompt. "
+    "Si YA CONECTADO, no pidas número ni reconectes: usá get/send directo. "
+    "Si hay número guardado, usá connect_telegram con phone vacío. "
+    "Solo pedí el número si el estado dice «sin número guardado». "
+    "Cuando dicten el código, confirm_telegram_code con los dígitos "
+    "(o uno dos tres…). Si pide 2FA, confirm_telegram_password. "
+    "Si el código falla, NO pidas otro de inmediato: pedí dictarlo otra vez. "
+    "Solo connect_telegram de nuevo si el código venció. "
     "Si en un turno anterior ya dio el contacto y ahora solo "
     "dice el texto del mensaje, usá ese mismo contacto y llamá send_chat_message "
     "ya: no vuelvas a pedir el mail. "
@@ -104,11 +105,19 @@ PERSONA_DISPLAY_NAME = {
 }
 
 
-def system_prompt_for_persona(persona: str, display_name: str | None = None) -> str:
+def system_prompt_for_persona(
+    persona: str,
+    display_name: str | None = None,
+    extra: str | None = None,
+) -> str:
     name = (display_name or "").strip() or PERSONA_DISPLAY_NAME.get(
         persona, PERSONA_DISPLAY_NAME["elisse"]
     )
-    return SYSTEM_PROMPT_TEMPLATE.format(name=name)
+    base = SYSTEM_PROMPT_TEMPLATE.format(name=name)
+    extra_s = (extra or "").strip()
+    if extra_s:
+        return f"{base}\n\n{extra_s}"
+    return base
 
 
 # service_name -> config de MultiServerMCPClient. Hoy solo "sandbox"; en
@@ -684,6 +693,8 @@ async def _build_agent(
     latitude: float | None = None,
     longitude: float | None = None,
 ):
+    from app.services import telegram as telegram_service
+
     tools = await get_tools_for_user(user_id, db, latitude=latitude, longitude=longitude)
 
     model = ChatAnthropic(
@@ -692,8 +703,13 @@ async def _build_agent(
         api_key=settings.anthropic_api_key,
     )
 
+    extra = telegram_service.agent_context(db, user_id)
     return create_react_agent(
-        model, tools, prompt=system_prompt_for_persona(persona, display_name=display_name)
+        model,
+        tools,
+        prompt=system_prompt_for_persona(
+            persona, display_name=display_name, extra=extra
+        ),
     )
 
 

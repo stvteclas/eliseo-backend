@@ -70,6 +70,37 @@ def test_telegram_status_not_connected(db, monkeypatch):
     assert "no está conectado" in telegram_service.status_text(db, user_id).lower()
 
 
+def test_agent_context_and_saved_phone(db, monkeypatch):
+    from app.models.telegram_credential import TelegramCredential
+
+    monkeypatch.setattr(telegram_service.settings, "telegram_api_id", 35059468)
+    monkeypatch.setattr(telegram_service.settings, "telegram_api_hash", "fakehash")
+    user_id = _user(db)
+    ctx = telegram_service.agent_context(db, user_id)
+    assert "sin número" in ctx.lower()
+
+    row = TelegramCredential(
+        user_id=user_id,
+        account_label="default",
+        phone="+5491112345678",
+        login_stage="none",
+    )
+    db.add(row)
+    db.commit()
+    assert telegram_service.saved_phone(db, user_id) == "+5491112345678"
+    ctx2 = telegram_service.agent_context(db, user_id)
+    assert "guardado" in ctx2.lower()
+    assert "NO vuelvas a preguntar" in ctx2 or "NO" in ctx2
+
+    row.login_stage = "connected"
+    row.session_encrypted = "x"
+    row.display_name = "Roberto"
+    db.add(row)
+    db.commit()
+    ctx3 = telegram_service.agent_context(db, user_id)
+    assert "YA CONECTADO" in ctx3
+
+
 def test_connect_telegram_tool_asks_for_phone(db, monkeypatch):
     monkeypatch.setattr(telegram_service.settings, "telegram_api_id", 35059468)
     monkeypatch.setattr(telegram_service.settings, "telegram_api_hash", "fakehash")

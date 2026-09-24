@@ -479,14 +479,14 @@ def build_builtin_tools(
             return "No pude revisar Telegram."
         return telegram_service.status_text(db, user_id)
 
-    def connect_telegram(phone: str) -> str:
+    def connect_telegram(phone: str = "") -> str:
         """
-        Empieza el login de Telegram (cuenta personal).
-        phone: número con código de país, ej. +54911…
+        Empieza o reanuda el login de Telegram.
+        phone: opcional si ya está guardado. Vacío = usar el número guardado.
         """
         if user_id is None or db is None:
             return "No pude conectar Telegram ahora."
-        return telegram_service.start_login(db, user_id, phone)
+        return telegram_service.start_login(db, user_id, phone or "")
 
     def confirm_telegram_code(code: str) -> str:
         """Confirma el código que Telegram mandó al teléfono."""
@@ -555,10 +555,13 @@ def build_builtin_tools(
 
         key = (service or "google_calendar").strip().lower()
         if key in {"telegram", "tg"}:
+            if telegram_service.is_connected(db, user_id) if user_id and db else False:
+                return "Telegram ya está conectado. Pedime leer o mandar un mensaje."
+            if telegram_service.saved_phone(db, user_id) if user_id and db else None:
+                return telegram_service.start_login(db, user_id, "")
             return (
-                "Para Telegram no hace falta el navegador. "
-                "Decime tu número con código de país (por ejemplo más 54 9 11…) "
-                "y uso connect_telegram. Después dictás el código."
+                "Para Telegram decime tu número con código de país una sola vez "
+                "(por ejemplo más 54 9 11…). Después queda guardado."
             )
         spec = next((s for s in ONBOARDING_SERVICES if s["id"] == key), None)
         if spec is None:
@@ -856,9 +859,9 @@ def build_builtin_tools(
             func=connect_telegram,
             name="connect_telegram",
             description=(
-                "Empieza login de Telegram con la cuenta personal. "
-                "phone=número con código de país (+54911…). "
-                "Usar cuando piden conectar Telegram."
+                "Login de Telegram. phone opcional: si vacío usa el número ya guardado. "
+                "Si ya está conectado, no hace nada. "
+                "Solo pedí phone al usuario si el estado dice sin número guardado."
             ),
         ),
         StructuredTool.from_function(

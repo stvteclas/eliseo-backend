@@ -134,30 +134,102 @@ def is_connected(db: Session, user_id: int) -> bool:
     return bool(row and row.login_stage == "connected" and row.session_encrypted)
 
 
+def saved_phone(db: Session, user_id: int) -> str | None:
+    row = db.query(TelegramCredential).filter(TelegramCredential.user_id == user_id).first()
+    if row is None:
+        return None
+    phone = (row.phone or "").strip()
+    return phone if len(re.sub(r"\D", "", phone)) >= 8 else None
+
+
+def agent_context(db: Session, user_id: int) -> str:
+    """Línea fija para el system prompt: el modelo no debe re-pedir el número."""
+    if not configured():
+        return "Estado Telegram: no configurado en el servidor."
+    row = db.query(TelegramCredential).filter(TelegramCredential.user_id == user_id).first()
+    if row is not None and row.login_stage == "connected" and row.session_encrypted:
+        name = row.display_name or row.phone or "tu cuenta"
+        phone = row.phone or ""
+        return (
+            f"Estado Telegram: YA CONECTADO como {name}"
+            + (f" ({phone})" if phone else "")
+            + ". NO pidas el número ni vuelvas a conectar. "
+            "Usá get_telegram_messages / send_telegram_message / list_telegram_chats."
+        )
+    if row is not None and row.login_stage == "code" and row.phone:
+        return (
+            f"Estado Telegram: esperando el código enviado a {row.phone}. "
+            "NO pidas el número. Usá confirm_telegram_code con los dígitos."
+        )
+    if row is not None and row.login_stage == "password":
+        return (
+            "Estado Telegram: falta la contraseña 2FA. "
+            "Usá confirm_telegram_password. NO pidas el número."
+        )
+    phone = saved_phone(db, user_id)
+    if phone:
+        return (
+            f"Estado Telegram: número guardado {phone}, sesión no activa. "
+            "Si piden Telegram, llamá connect_telegram con phone vacío "
+            "(usa el guardado). NO vuelvas a preguntar el número."
+        )
+    return (
+        "Estado Telegram: sin número guardado. "
+        "Pedí el número con código de país UNA sola vez y usá connect_telegram."
+    )
+
+
 def status_text(db: Session, user_id: int) -> str:
     if not configured():
         return "Telegram no está configurado en el servidor todavía."
     row = db.query(TelegramCredential).filter(TelegramCredential.user_id == user_id).first()
-    if row is None or row.login_stage == "none":
-        return (
-            "Telegram no está conectado. Decí tu número con código de país "
-            "(ej. más 54 9 11…) y te mando el código."
-        )
-    if row.login_stage == "code":
+    if row is not None and row.login_stage == "connected" and row.session_encrypted:
+        name = row.display_name or row.phone or "tu cuenta"
+        return f"Telegram conectado como {name}."
+    if row is not None and row.login_stage == "code" and row.phone:
         return (
             f"Estoy esperando el código que Telegram mandó al {row.phone}. "
-            "Dictalo dígito por dígito, por ejemplo: uno dos tres cuatro cinco."
+            "Dictalo dígito por dígito."
         )
-    if row.login_stage == "password":
+    if row is not None and row.login_stage == "password":
         return "Telegram pide la contraseña de verificación en dos pasos."
-    name = row.display_name or row.phone or "tu cuenta"
-    return f"Telegram conectado como {name}."
+    phone = saved_phone(db, user_id)
+    if phone:
+        return (
+            f"Tengo tu número {phone} guardado, pero la sesión no está activa. "
+            "Decí «conectá Telegram» y te mando el código, sin repetir el número."
+        )
+    return (
+        "Telegram no está conectado. Decí tu número con código de país "
+        "una sola vez (ej. más 54 9 11…) y lo guardo."
+    )
 
 
-def start_login(db: Session, user_id: int, phone: str) -> str:
-    phone_n = normalize_phone(phone)
+def start_login(db: Session, user_id: int, phone: str = "") -> str:
+    if is_connected(db, user_id):
+        row = db.query(TelegramCredential).filter(TelegramCredential.user_id == user_id).first()
+        name = (row.display_name if row else None) or "tu cuenta"
+        return (
+            f"Telegram ya está conectado como {name}. "
+            "No hace falta el número otra vez: pedime leer o mandar un mensaje."
+        )
+
+    raw = (phone or "").strip()
+    if not raw or len(re.sub(r"\D", "", raw)) < 8:
+        saved = saved_phone(db, user_id)
+        if saved:
+            phone_n = saved
+        else:
+            return (
+                "Necesito tu número con código de país una sola vez, "
+                "por ejemplo más 54 9 11… Después lo guardo."
+            )
+    else:
+        phone_n = normalize_phone(raw)
+
     if len(re.sub(r"\D", "", phone_n)) < 8:
         return "Necesito el número completo con código de país, por ejemplo más 54 9 11…"
+
     try:
         session_str, phone_code_hash = _run(_send_code_net(phone_n))
     except Exception as exc:
@@ -167,7 +239,7 @@ def start_login(db: Session, user_id: int, phone: str) -> str:
         return "Telegram no devolvió un código válido. Probá de nuevo en un minuto."
 
     row = _get_or_create_cred(db, user_id)
-    row.phone = phone_n
+    row.phone = phone_n  # se conserva para siempre (también tras desconectar sesión)
     row.pending_session_encrypted = encrypt(session_str)
     row.phone_code_hash = phone_code_hash
     row.session_encrypted = None
@@ -177,8 +249,8 @@ def start_login(db: Session, user_id: int, phone: str) -> str:
     db.commit()
     return (
         f"Te mandé un código de Telegram al {phone_n}. "
-        "Cuando te llegue, dictalo dígito por dígito: por ejemplo uno dos tres cuatro cinco. "
-        "No pidas otro código salvo que diga que venció."
+        "Cuando te llegue, dictalo dígito por dígito. "
+        "El número queda guardado: no te lo vuelvo a pedir."
     )
 
 
@@ -254,16 +326,32 @@ def confirm_password(db: Session, user_id: int, password: str) -> str:
 
 
 def disconnect(db: Session, user_id: int) -> str:
+    """Cierra la sesión pero conserva el número para no pedirlo otra vez."""
     from app.models.connector import UserConnector
 
     row = db.query(TelegramCredential).filter(TelegramCredential.user_id == user_id).first()
+    phone = None
     if row is not None:
-        db.delete(row)
+        phone = row.phone
+        row.session_encrypted = None
+        row.pending_session_encrypted = None
+        row.phone_code_hash = None
+        row.login_stage = "none"
+        row.display_name = None
+        row.telegram_user_id = None
+        row.phone = phone  # conservar
+        row.updated_at = datetime.now(timezone.utc)
+        db.add(row)
     db.query(UserConnector).filter(
         UserConnector.user_id == user_id,
         UserConnector.service_name == "telegram",
     ).delete()
     db.commit()
+    if phone:
+        return (
+            f"Desconecté la sesión de Telegram. Tu número {phone} sigue guardado: "
+            "la próxima vez solo pedí conectar y el código."
+        )
     return "Listo, desconecté Telegram."
 
 
