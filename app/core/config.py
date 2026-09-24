@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     whatsapp_business_token: str = ""
     whatsapp_phone_number_id: str = ""
 
+    # Telegram (cuenta personal vía Telethon / MTProto).
+    # api_id + api_hash de https://my.telegram.org → API development tools.
+    telegram_api_id: int = 0
+    telegram_api_hash: str = ""
+
     # Mercado Pago (HU-T20): app "EliseoMP" con OAuth por usuario. mp_access_token es
     # solo el token de prueba del sandbox: el flujo real no lo usa.
     mp_access_token: str = ""

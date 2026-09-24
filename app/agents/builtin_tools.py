@@ -23,6 +23,7 @@ from app.services import notes as notes_service
 from app.services import pending_confirm
 from app.services import prefs as prefs_service
 from app.services import study as study_service
+from app.services import telegram as telegram_service
 from app.services import traffic as traffic_service
 from app.services import translate as translate_service
 from app.services.weather import get_weather_report
@@ -68,6 +69,14 @@ BUILTIN_TOOL_NAMES = [
     "speak_slower",
     "speak_normal",
     "broadcast_message",
+    "telegram_status",
+    "connect_telegram",
+    "confirm_telegram_code",
+    "confirm_telegram_password",
+    "disconnect_telegram",
+    "list_telegram_chats",
+    "get_telegram_messages",
+    "send_telegram_message",
     "get_onboarding_status",
     "start_service_connection",
 ]
@@ -414,7 +423,7 @@ def build_builtin_tools(
         """
         Manda el mismo mensaje a varios contactos.
         contacts: nombres o emails separados por coma.
-        channel: chat | email
+        channel: chat | email | telegram
         """
         if user_id is None or db is None:
             return "No pude enviar ahora."
@@ -425,14 +434,19 @@ def build_builtin_tools(
         if not raw_contacts:
             return "Decime a quién: nombres o emails separados por coma."
         ch = (channel or "chat").strip().lower()
-        if ch not in {"chat", "email", "mail", "gmail"}:
+        if ch not in {"chat", "email", "mail", "gmail", "telegram", "tg"}:
             ch = "chat"
 
         def _runner() -> str:
             from app.agents.orchestrator import build_calendar_tools
 
-            tools = {t.name: t for t in build_calendar_tools(user_id, db)}
             results = []
+            if ch in {"telegram", "tg"}:
+                for c in raw_contacts:
+                    results.append(telegram_service.send_message(db, user_id, c, body))
+                return " ".join(results)
+
+            tools = {t.name: t for t in build_calendar_tools(user_id, db)}
             if ch == "chat":
                 send = tools.get("send_chat_message")
                 if send is None:
@@ -450,11 +464,122 @@ def build_builtin_tools(
         from app.models.user import User
 
         user = db.query(User).filter(User.id == user_id).first()
-        label = f"mandar a {', '.join(raw_contacts)} por {ch}"
         if user is not None and user.confirm_sends:
-            pending_confirm.set_pending(user_id, label, _runner)
-            return f"¿{label}? Decí dale para confirmar o cancelá."
+            pending_confirm.set_pending(
+                user_id,
+                f"broadcast {ch} a {', '.join(raw_contacts)}",
+                _runner,
+            )
+            return f"¿Mando ese mensaje por {ch} a {len(raw_contacts)} contactos? Decí dale o cancelá."
         return _runner()
+
+    def telegram_status() -> str:
+        """Estado de la conexión de Telegram."""
+        if user_id is None or db is None:
+            return "No pude revisar Telegram."
+        return telegram_service.status_text(db, user_id)
+
+    def connect_telegram(phone: str) -> str:
+        """
+        Empieza el login de Telegram (cuenta personal).
+        phone: número con código de país, ej. +54911…
+        """
+        if user_id is None or db is None:
+            return "No pude conectar Telegram ahora."
+        return telegram_service.start_login(db, user_id, phone)
+
+    def confirm_telegram_code(code: str) -> str:
+        """Confirma el código que Telegram mandó al teléfono."""
+        if user_id is None or db is None:
+            return "No pude confirmar el código."
+        return telegram_service.confirm_code(db, user_id, code)
+
+    def confirm_telegram_password(password: str) -> str:
+        """Contraseña 2FA de Telegram si la pide."""
+        if user_id is None or db is None:
+            return "No pude confirmar la contraseña."
+        return telegram_service.confirm_password(db, user_id, password)
+
+    def disconnect_telegram() -> str:
+        """Desconecta Telegram de Eliseo."""
+        if user_id is None or db is None:
+            return "No pude desconectar."
+        return telegram_service.disconnect(db, user_id)
+
+    def list_telegram_chats(limit: float = 15) -> str:
+        """Lista chats recientes de Telegram."""
+        if user_id is None or db is None:
+            return "No pude listar chats."
+        return telegram_service.list_dialogs(db, user_id, int(limit or 15))
+
+    def get_telegram_messages(contact: str, limit: float = 8) -> str:
+        """Lee mensajes recientes de un chat de Telegram (nombre o @usuario)."""
+        if user_id is None or db is None:
+            return "No pude leer Telegram."
+        return telegram_service.get_messages(db, user_id, contact, int(limit or 8))
+
+    def send_telegram_message(contact: str, text: str) -> str:
+        """Envía un mensaje de Telegram a un contacto o @usuario."""
+        if user_id is None or db is None:
+            return "No pude enviar por Telegram."
+
+        def _send() -> str:
+            return telegram_service.send_message(db, user_id, contact, text)
+
+        from app.models.user import User
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is not None and user.confirm_sends:
+            pending_confirm.set_pending(
+                user_id,
+                f"Telegram a {contact}: {(text or '')[:60]}",
+                _send,
+            )
+            return f"¿Le mando por Telegram a {contact}? Decí dale o cancelá."
+        return _send()
+
+    def get_onboarding_status() -> str:
+        """Dice qué servicios faltan conectar (Calendar, Mercado Pago, Teams)."""
+        if user_id is None or db is None:
+            return "No pude revisar tus conexiones ahora."
+        from app.services.onboarding import get_onboarding_status as status_fn
+
+        return status_fn(db, user_id)["guide"]
+
+    def start_service_connection(service: str = "google_calendar") -> str:
+        """
+        Abre en el teléfono el flujo para conectar un servicio.
+        service: google_calendar | mercadopago | teams_calendar | telegram
+        """
+        from app.services.onboarding import ONBOARDING_SERVICES
+
+        key = (service or "google_calendar").strip().lower()
+        if key in {"telegram", "tg"}:
+            return (
+                "Para Telegram no hace falta el navegador. "
+                "Decime tu número con código de país (por ejemplo más 54 9 11…) "
+                "y uso connect_telegram. Después dictás el código."
+            )
+        spec = next((s for s in ONBOARDING_SERVICES if s["id"] == key), None)
+        if spec is None:
+            return (
+                "No conozco ese servicio. Probá google_calendar, mercadopago, "
+                "teams_calendar o telegram."
+            )
+        if not spec.get("authorize_path"):
+            return f"Para {spec['label']}: {spec['hint']}"
+        queue_client_action(
+            {
+                "type": "connect_service",
+                "service": spec["id"],
+                "authorize_path": spec["authorize_path"],
+                "label": spec["label"],
+            }
+        )
+        return (
+            f"Te abro la conexión de {spec['label']}. "
+            f"{spec['hint']} Cuando termines en el navegador, volvé y avisame."
+        )
 
     def make_study_summary(material: str, mode: str = "resumen", depth: str = "medio") -> str:
         """
@@ -472,7 +597,6 @@ def build_builtin_tools(
         plan = music_service.play_music_plan(query, service=service)
         if not plan["ok"] or not plan.get("url"):
             return plan["message"]
-        # Cortar cualquier preview viejo que haya quedado sonando en Eliseo.
         queue_client_action({"type": "stop_audio"})
         action: dict = {"type": "open_url", "url": plan["url"]}
         if plan.get("url_alt"):
@@ -489,38 +613,6 @@ def build_builtin_tools(
         return (
             "Corté lo que sonaba en Eliseo. "
             "Si sigue Spotify o YouTube Music, pausalo en esa app."
-        )
-
-    def get_onboarding_status() -> str:
-        """Dice qué servicios faltan conectar (Calendar, Mercado Pago, Teams)."""
-        if user_id is None or db is None:
-            return "No pude revisar tus conexiones ahora."
-        from app.services.onboarding import get_onboarding_status as status_fn
-
-        return status_fn(db, user_id)["guide"]
-
-    def start_service_connection(service: str = "google_calendar") -> str:
-        """
-        Abre en el teléfono el flujo para conectar un servicio.
-        service: google_calendar | mercadopago | teams_calendar
-        """
-        from app.services.onboarding import ONBOARDING_SERVICES
-
-        key = (service or "google_calendar").strip().lower()
-        spec = next((s for s in ONBOARDING_SERVICES if s["id"] == key), None)
-        if spec is None:
-            return "No conozco ese servicio. Probá google_calendar, mercadopago o teams_calendar."
-        queue_client_action(
-            {
-                "type": "connect_service",
-                "service": spec["id"],
-                "authorize_path": spec["authorize_path"],
-                "label": spec["label"],
-            }
-        )
-        return (
-            f"Te abro la conexión de {spec['label']}. "
-            f"{spec['hint']} Cuando termines en el navegador, volvé y avisame."
         )
 
     return [
@@ -752,7 +844,60 @@ def build_builtin_tools(
             description=(
                 "Manda el mismo texto a varios contactos. "
                 "contacts=nombres/emails separados por coma; text=mensaje; "
-                "channel=chat|email. Si confirm_sends está on, pide dale."
+                "channel=chat|email|telegram. Si confirm_sends está on, pide dale."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=telegram_status,
+            name="telegram_status",
+            description="Dice si Telegram está conectado o qué falta (código / 2FA).",
+        ),
+        StructuredTool.from_function(
+            func=connect_telegram,
+            name="connect_telegram",
+            description=(
+                "Empieza login de Telegram con la cuenta personal. "
+                "phone=número con código de país (+54911…). "
+                "Usar cuando piden conectar Telegram."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=confirm_telegram_code,
+            name="confirm_telegram_code",
+            description=(
+                "Confirma el código numérico que Telegram mandó al teléfono. "
+                "Usar cuando el usuario dicta el código."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=confirm_telegram_password,
+            name="confirm_telegram_password",
+            description="Contraseña de verificación en dos pasos de Telegram, si la pide.",
+        ),
+        StructuredTool.from_function(
+            func=disconnect_telegram,
+            name="disconnect_telegram",
+            description="Desconecta Telegram de Eliseo.",
+        ),
+        StructuredTool.from_function(
+            func=list_telegram_chats,
+            name="list_telegram_chats",
+            description="Lista chats recientes de Telegram.",
+        ),
+        StructuredTool.from_function(
+            func=get_telegram_messages,
+            name="get_telegram_messages",
+            description=(
+                "Lee mensajes recientes de Telegram. contact=nombre del chat o @usuario."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=send_telegram_message,
+            name="send_telegram_message",
+            description=(
+                "Envía un mensaje por Telegram (cuenta personal). "
+                "contact=nombre o @usuario; text=mensaje. "
+                "NO usar send_chat_message (eso es Google Chat)."
             ),
         ),
         StructuredTool.from_function(
@@ -764,8 +909,8 @@ def build_builtin_tools(
             func=start_service_connection,
             name="start_service_connection",
             description=(
-                "Abre el flujo OAuth en el teléfono para conectar un servicio. "
-                "service=google_calendar (obligatorio), mercadopago o teams_calendar."
+                "Abre el flujo OAuth en el teléfono, o guía el login por voz de Telegram. "
+                "service=google_calendar|mercadopago|teams_calendar|telegram."
             ),
         ),
     ]

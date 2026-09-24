@@ -29,6 +29,16 @@ ONBOARDING_SERVICES: list[dict] = [
         "authorize_path": "/connectors/teams_calendar/authorize",
         "hint": "Para leer el calendario de Microsoft.",
     },
+    {
+        "id": "telegram",
+        "label": "Telegram",
+        "required": False,
+        "authorize_path": None,
+        "hint": (
+            "Decime tu número con código de país; te mando un código por Telegram "
+            "y lo dictás. No abre el navegador."
+        ),
+    },
 ]
 
 
