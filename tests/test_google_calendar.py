@@ -287,6 +287,7 @@ def test_oauth_authorize_requests_events_scope():
     assert "gmail.send" in url
     assert "chat.spaces" in url
     assert "chat.messages" in url
+    assert "chat.memberships.readonly" in url
     assert "contacts.readonly" in url
 
 
@@ -371,6 +372,7 @@ def test_authorize_returns_google_url_with_signed_state(db):
         "https://www.googleapis.com/auth/gmail.send "
         "https://www.googleapis.com/auth/chat.spaces "
         "https://www.googleapis.com/auth/chat.messages "
+        "https://www.googleapis.com/auth/chat.memberships.readonly "
         "https://www.googleapis.com/auth/contacts.readonly"
     ]
     assert query["redirect_uri"] == [settings.google_redirect_uri]

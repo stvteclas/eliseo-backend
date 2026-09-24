@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 CHAT_SCOPES = (
     "https://www.googleapis.com/auth/chat.spaces",
     "https://www.googleapis.com/auth/chat.messages",
+    "https://www.googleapis.com/auth/chat.memberships.readonly",
 )
 
 
@@ -81,14 +82,49 @@ def _chat_error_message(exc: HttpError) -> str:
     return "No pude usar Google Chat ahora. Probá de nuevo en un rato."
 
 
+def _is_me_member(member_name: str) -> bool:
+    name = (member_name or "").strip()
+    return name in {"users/me"} or name.endswith("/me")
+
+
+def _peer_from_messages(service, space_name: str, my_resource: str | None) -> dict[str, str]:
+    """Si members falla o no trae nombre, saca el peer del historial reciente."""
+    try:
+        listed = (
+            service.spaces()
+            .messages()
+            .list(parent=space_name, pageSize=8, orderBy="createTime desc")
+            .execute()
+        )
+    except Exception:
+        return {}
+    for msg in listed.get("messages") or []:
+        if _sender_is_me(msg, my_resource):
+            continue
+        sender = msg.get("sender") or {}
+        label = (sender.get("displayName") or "").strip()
+        user = (sender.get("name") or "").strip()
+        email = ""
+        if user.startswith("users/") and "@" in user:
+            email = user.split("/", 1)[1].lower()
+        if label or email or user:
+            return {
+                "name": label or email or user.replace("users/", ""),
+                "email": email,
+                "user": user,
+            }
+    return {}
+
+
 def list_chat_dm_contacts(credentials: Credentials, limit: int = 30) -> list[dict[str, str]]:
     """
     Contactos con los que ya hay un DM en Google Chat.
-    [{name, email}, ...] — email puede faltar si Google solo da id numérico.
+    [{name, email, space, user}, ...] — email/user pueden faltar; space alcanza para leer/enviar.
     """
     out: list[dict[str, str]] = []
     try:
         service = _chat_service(credentials)
+        my_resource = _my_chat_user_name(service)
         page_token = None
         while len(out) < limit:
             kwargs = {
@@ -99,11 +135,14 @@ def list_chat_dm_contacts(credentials: Credentials, limit: int = 30) -> list[dic
                 kwargs["pageToken"] = page_token
             listed = service.spaces().list(**kwargs).execute()
             for space in listed.get("spaces") or []:
-                space_name = space.get("name")
+                space_name = (space.get("name") or "").strip()
                 if not space_name:
                     continue
-                display = (space.get("displayName") or space.get("name") or "").strip()
+                display = (space.get("displayName") or "").strip()
                 email = ""
+                user = ""
+                label = display
+
                 try:
                     members = (
                         service.spaces()
@@ -112,21 +151,47 @@ def list_chat_dm_contacts(credentials: Credentials, limit: int = 30) -> list[dic
                         .execute()
                     )
                 except Exception:
+                    logger.exception("Chat members.list falló en %s", space_name)
                     members = {}
+
                 for membership in members.get("memberships") or []:
                     member = membership.get("member") or {}
                     if (member.get("type") or "").upper() != "HUMAN":
                         continue
                     mname = (member.get("name") or "").strip()
-                    # users/me es el autenticado
-                    if mname.endswith("/me") or mname == "users/me":
+                    if _is_me_member(mname):
                         continue
-                    label = (member.get("displayName") or "").strip() or display
+                    if my_resource and mname == my_resource:
+                        continue
+                    user = mname
+                    label = (member.get("displayName") or "").strip() or label
                     if mname.startswith("users/") and "@" in mname:
                         email = mname.split("/", 1)[1].lower()
-                    if label or email:
-                        out.append({"name": label or email, "email": email})
-                        break
+                    break
+
+                if not label or (not email and not user):
+                    from_msgs = _peer_from_messages(service, space_name, my_resource)
+                    if from_msgs:
+                        label = label or from_msgs.get("name") or ""
+                        email = email or from_msgs.get("email") or ""
+                        user = user or from_msgs.get("user") or ""
+
+                if not label and email:
+                    label = email
+                if not label and user.startswith("users/"):
+                    label = user.split("/", 1)[1]
+                # Sin ningún handle usable, igual guardamos el space (último recurso).
+                if not label:
+                    label = "chat reciente"
+
+                out.append(
+                    {
+                        "name": label,
+                        "email": email,
+                        "space": space_name,
+                        "user": user,
+                    }
+                )
                 if len(out) >= limit:
                     break
             page_token = listed.get("nextPageToken")
@@ -139,10 +204,32 @@ def list_chat_dm_contacts(credentials: Credentials, limit: int = 30) -> list[dic
     return out
 
 
-def resolve_contact(credentials: Credentials, contact: str) -> tuple[str | None, str]:
+def _name_match_score(query_fold: str, candidate_fold: str) -> float:
+    if not query_fold or not candidate_fold:
+        return 0.0
+    score = SequenceMatcher(None, query_fold, candidate_fold).ratio()
+    if query_fold == candidate_fold:
+        return 1.0
+    if query_fold in candidate_fold or candidate_fold in query_fold:
+        score = max(score, 0.88)
+    q_tokens = [t for t in query_fold.split() if t]
+    c_tokens = [t for t in candidate_fold.split() if t]
+    if q_tokens and c_tokens:
+        # "ana" vs "ana lopez"
+        if all(any(qt == ct or qt in ct or ct in qt for ct in c_tokens) for qt in q_tokens):
+            score = max(score, 0.9)
+        if q_tokens[0] == c_tokens[0]:
+            score = max(score, 0.82)
+    return score
+
+
+def resolve_chat_target(
+    credentials: Credentials,
+    contact: str,
+) -> tuple[dict[str, str] | None, str]:
     """
-    Resuelve nombre o email a un email usable en Chat.
-    Orden: si ya es email → ok; Google Contacts; DMs de Chat por nombre.
+    Resuelve nombre/email a un target de Chat.
+    Dict posible: {label, email, space, user}. Basta space O email O user.
     """
     raw = (contact or "").strip()
     if not raw:
@@ -150,73 +237,106 @@ def resolve_contact(credentials: Credentials, contact: str) -> tuple[str | None,
 
     as_email = _normalize_email(raw)
     if as_email:
-        return as_email, ""
+        return {"label": as_email, "email": as_email, "space": "", "user": _user_name(as_email)}, ""
 
     email, err = contacts_service.resolve_email_from_contacts(credentials, raw)
     if email:
-        return email, ""
+        return {"label": raw, "email": email, "space": "", "user": _user_name(email)}, ""
     if err:
         return None, err
 
-    # Buscar en DMs existentes de Chat
     folded = _fold(raw)
     dms = list_chat_dm_contacts(credentials, limit=40)
-    scored = []
+    scored: list[tuple[float, dict[str, str]]] = []
     for hit in dms:
         name_fold = _fold(hit.get("name") or "")
         email_hit = (hit.get("email") or "").strip().lower()
-        if not email_hit and not name_fold:
-            continue
-        score = SequenceMatcher(None, folded, name_fold).ratio() if name_fold else 0
-        if folded and name_fold and (folded in name_fold or name_fold in folded):
-            score = max(score, 0.85)
-        if email_hit and folded in email_hit:
-            score = max(score, 0.9)
-        if score >= 0.45 and email_hit:
+        user_hit = (hit.get("user") or "").strip()
+        score = _name_match_score(folded, name_fold)
+        if email_hit:
+            score = max(score, _name_match_score(folded, _fold(email_hit.split("@")[0])))
+            if folded in email_hit:
+                score = max(score, 0.92)
+        if user_hit and folded in _fold(user_hit):
+            score = max(score, 0.7)
+        # Aceptamos match por nombre aunque no haya email: usamos el space del DM.
+        if score >= 0.55 and (hit.get("space") or email_hit or user_hit):
             scored.append((score, hit))
+
     scored.sort(key=lambda x: x[0], reverse=True)
     if not scored:
         return None, (
-            f"No encontré a «{raw}» en Google Contacts ni en tus chats. "
-            "Probá el email completo o agregalo a contactos de Google."
+            f"No encontré a «{raw}» en Google Contacts ni en tus chats de Google Chat. "
+            "Abrí el DM en Chat, o agregalo a contactos de Google, o dictame el email."
         )
-    if len(scored) > 1 and scored[0][0] - scored[1][0] < 0.1:
+    if len(scored) > 1 and scored[0][0] - scored[1][0] < 0.08:
         options = ", ".join(
             f"{h['name']}" + (f" ({h['email']})" if h.get("email") else "")
             for _, h in scored[:4]
         )
         return None, f"Encontré varios: {options}. ¿Cuál?"
+
     top = scored[0][1]
-    if not top.get("email"):
-        return None, (
-            f"Encontré a {top.get('name')} en Chat pero sin email visible. "
-            "Decime el mail una vez o agregalo en Google Contacts."
-        )
-    return top["email"], ""
+    return (
+        {
+            "label": top.get("name") or raw,
+            "email": top.get("email") or "",
+            "space": top.get("space") or "",
+            "user": top.get("user") or "",
+        },
+        "",
+    )
+
+
+def resolve_contact(credentials: Credentials, contact: str) -> tuple[str | None, str]:
+    """Compat: devuelve email si se puede; si solo hay DM por nombre, string vacío + ok vía target."""
+    target, err = resolve_chat_target(credentials, contact)
+    if err or not target:
+        return None, err or "No encontré el contacto."
+    if target.get("email"):
+        return target["email"], ""
+    # Sin email pero con space/user: señalamos éxito relativo con placeholder.
+    if target.get("space") or target.get("user"):
+        return target.get("label") or contact, ""
+    return None, "No encontré el contacto."
 
 
 def find_direct_message_space(credentials: Credentials, contact: str) -> tuple[str | None, str]:
     """
     Devuelve (space_name, error_o_ok).
-    `contact` puede ser nombre o email (se resuelve).
+    `contact` puede ser nombre o email. Si ya hay DM, usa ese space sin pedir email.
     """
-    email, err = resolve_contact(credentials, contact)
-    if err or not email:
+    target, err = resolve_chat_target(credentials, contact)
+    if err or not target:
         return None, err or "Necesito el contacto."
 
+    if target.get("space"):
+        return target["space"], ""
+
     service = _chat_service(credentials)
-    try:
-        space = service.spaces().findDirectMessage(name=_user_name(email)).execute()
-        name = space.get("name")
-        if name:
-            return name, ""
-    except HttpError as exc:
-        if getattr(exc, "resp", None) is None or exc.resp.status != 404:
+    user_resource = (target.get("user") or "").strip()
+    if not user_resource and target.get("email"):
+        user_resource = _user_name(target["email"])
+
+    if user_resource:
+        try:
+            space = service.spaces().findDirectMessage(name=user_resource).execute()
+            name = space.get("name")
+            if name:
+                return name, ""
+        except HttpError as exc:
+            if getattr(exc, "resp", None) is None or exc.resp.status != 404:
+                logger.exception("Chat findDirectMessage falló")
+                return None, _chat_error_message(exc)
+        except Exception:
             logger.exception("Chat findDirectMessage falló")
-            return None, _chat_error_message(exc)
-    except Exception:
-        logger.exception("Chat findDirectMessage falló")
-        return None, "No pude abrir el chat con ese contacto. ¿Tenés Google Chat API y permiso reconectado?"
+            return None, "No pude abrir el chat con ese contacto. ¿Tenés Google Chat API y permiso reconectado?"
+
+    if not target.get("email") and not user_resource:
+        return None, (
+            f"Encontré a {target.get('label') or contact} pero no pude abrir el chat. "
+            "Dictame el email una vez."
+        )
 
     try:
         created = (
@@ -227,7 +347,7 @@ def find_direct_message_space(credentials: Credentials, contact: str) -> tuple[s
                     "memberships": [
                         {
                             "member": {
-                                "name": _user_name(email),
+                                "name": user_resource or _user_name(target["email"]),
                                 "type": "HUMAN",
                             }
                         }
@@ -275,14 +395,15 @@ def list_chat_messages(
     limit: int = 8,
 ) -> str:
     """Lee mensajes recientes del DM con contact (nombre o email)."""
-    email, resolve_err = resolve_contact(credentials, contact)
-    if resolve_err or not email:
+    target, resolve_err = resolve_chat_target(credentials, contact)
+    if resolve_err or not target:
         return resolve_err or "No encontré el contacto."
 
-    space_name, err = find_direct_message_space(credentials, email)
+    space_name, err = find_direct_message_space(credentials, contact)
     if err or not space_name:
         return err or "No encontré el chat."
 
+    label = target.get("label") or target.get("email") or contact
     max_n = max(1, min(int(limit or 8), 15))
     try:
         service = _chat_service(credentials)
@@ -301,7 +422,7 @@ def list_chat_messages(
 
     messages = listed.get("messages") or []
     if not messages:
-        return f"Todavía no hay mensajes con {email}."
+        return f"Todavía no hay mensajes con {label}."
 
     messages = list(reversed(messages))
     lines: list[str] = []
@@ -315,7 +436,7 @@ def list_chat_messages(
         when_bit = f" ({when})" if when else ""
         lines.append(f"{who}{when_bit}: {text}")
 
-    return f"Chat con {email}: " + " | ".join(lines)
+    return f"Chat con {label}: " + " | ".join(lines)
 
 
 def send_chat_message(
@@ -329,14 +450,15 @@ def send_chat_message(
         return "Decime qué querés mandarle."
     body = body[:3500]
 
-    email, resolve_err = resolve_contact(credentials, contact)
-    if resolve_err or not email:
+    target, resolve_err = resolve_chat_target(credentials, contact)
+    if resolve_err or not target:
         return resolve_err or "No encontré el contacto."
 
-    space_name, err = find_direct_message_space(credentials, email)
+    space_name, err = find_direct_message_space(credentials, contact)
     if err or not space_name:
         return err or "No encontré el chat."
 
+    label = target.get("label") or target.get("email") or contact
     try:
         service = _chat_service(credentials)
         service.spaces().messages().create(
@@ -351,8 +473,7 @@ def send_chat_message(
         return "No pude enviar el mensaje de Chat."
 
     preview = body if len(body) <= 80 else body[:77] + "…"
-    return f"Listo, le mandé por Google Chat a {email}: «{preview}»."
-
+    return f"Listo, le mandé por Google Chat a {label}: «{preview}»."
 
 def _parse_chat_time(iso: str | None) -> datetime | None:
     if not iso:

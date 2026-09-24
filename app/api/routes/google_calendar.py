@@ -51,9 +51,10 @@ GOOGLE_CALENDAR_SCOPES = [
     # Lectura y envío de correo (misma reconexión OAuth; hace falta Gmail API en Cloud).
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
-    # Google Chat + Contactos (resolver nombre → email).
+    # Google Chat + Contactos (resolver nombre → email / DM existente).
     "https://www.googleapis.com/auth/chat.spaces",
     "https://www.googleapis.com/auth/chat.messages",
+    "https://www.googleapis.com/auth/chat.memberships.readonly",
     "https://www.googleapis.com/auth/contacts.readonly",
 ]
 SCOPES = GOOGLE_CALENDAR_SCOPES

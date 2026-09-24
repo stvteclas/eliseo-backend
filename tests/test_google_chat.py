@@ -78,6 +78,79 @@ def test_resolve_name_via_contacts(monkeypatch):
     assert email == "ana@ejemplo.com"
 
 
+def test_resolve_name_via_dm_without_email(monkeypatch):
+    """Si el DM existe pero Google no expone email, igual resolvemos por space."""
+
+    class FakeCreds:
+        pass
+
+    monkeypatch.setattr(
+        chat_service.contacts_service,
+        "resolve_email_from_contacts",
+        lambda creds, q: (None, ""),
+    )
+    monkeypatch.setattr(
+        chat_service,
+        "list_chat_dm_contacts",
+        lambda creds, limit=40: [
+            {
+                "name": "Ana López",
+                "email": "",
+                "space": "spaces/dm-ana",
+                "user": "users/12345",
+            }
+        ],
+    )
+    target, err = chat_service.resolve_chat_target(FakeCreds(), "Ana")
+    assert err == ""
+    assert target is not None
+    assert target["space"] == "spaces/dm-ana"
+    assert target["label"] == "Ana López"
+
+    space, space_err = chat_service.find_direct_message_space(FakeCreds(), "Ana")
+    assert space_err == ""
+    assert space == "spaces/dm-ana"
+
+
+def test_send_by_name_uses_existing_dm_space(monkeypatch):
+    class FakeCreds:
+        pass
+
+    class FakeCreateReq:
+        def execute(self):
+            return {"name": "spaces/dm-ana/messages/1"}
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            assert kwargs["parent"] == "spaces/dm-ana"
+            return FakeCreateReq()
+
+    class FakeSpaces:
+        def messages(self):
+            return FakeMessages()
+
+    class FakeService:
+        def spaces(self):
+            return FakeSpaces()
+
+    monkeypatch.setattr(chat_service, "_chat_service", lambda creds: FakeService())
+    monkeypatch.setattr(
+        chat_service.contacts_service,
+        "resolve_email_from_contacts",
+        lambda creds, q: (None, ""),
+    )
+    monkeypatch.setattr(
+        chat_service,
+        "list_chat_dm_contacts",
+        lambda creds, limit=40: [
+            {"name": "Ana", "email": "", "space": "spaces/dm-ana", "user": "users/1"}
+        ],
+    )
+    msg = chat_service.send_chat_message(FakeCreds(), "Ana", "Hola")
+    assert "Listo" in msg
+    assert "Ana" in msg
+
+
 def test_list_chat_messages(monkeypatch):
     class FakeCreds:
         pass
