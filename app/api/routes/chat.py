@@ -15,6 +15,7 @@ class ChatRequest(BaseModel):
     latitude: float | None = None
     longitude: float | None = None
     source_language: str | None = None
+    history: list[dict] | None = None
 
 
 class ChatResponse(BaseModel):
@@ -34,6 +35,15 @@ async def chat(
     por el motor de orquestación (LangGraph + MCP) en vez de devolver
     algo fijo. Protegido: solo usuarios autenticados.
     """
+    from app.services.conversation_memory import parse_history_payload
+
+    history = data.history
+    if history is not None:
+        # Reusar el mismo normalizador vía JSON
+        import json
+
+        history = parse_history_payload(json.dumps(history))
+
     try:
         reply, actions, speak_language = await handle_user_message(
             data.message,
@@ -42,6 +52,7 @@ async def chat(
             latitude=data.latitude,
             longitude=data.longitude,
             source_language=data.source_language,
+            history=history,
         )
     except ToolServerUnavailable:
         raise HTTPException(

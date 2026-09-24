@@ -62,6 +62,11 @@ SYSTEM_PROMPT_TEMPLATE = (
     "Si piden leer o mandar un Google Chat / Chat a alguien, usá "
     "get_chat_messages o send_chat_message con el email del contacto "
     "(hace falta Chat API y haber reconectado Google con permiso de Chat). "
+    "Google Chat NO es Gmail: no uses send_email para un Chat. "
+    "Si en un turno anterior ya dio el email del contacto y ahora solo "
+    "dice el texto del mensaje, usá ese mismo email y llamá send_chat_message "
+    "ya: no vuelvas a pedir el mail. "
+    "Si en el mismo mensaje trae email y texto, llamá la tool de una. "
     "Si el usuario aún no conectó Google Calendar u otro servicio, "
     "usá get_onboarding_status y start_service_connection para guiarlo paso a paso. "
     "Calendar es obligatorio antes de hablar de agenda o recordatorios. "
@@ -324,13 +329,16 @@ def build_calendar_tools(user_id: int, db: Session, account_label: str = "defaul
     )
     chat_list_description = (
         "Lee mensajes recientes de Google Chat con un contacto. "
-        "contact=email (ej. ana@gmail.com). Usar ante 'qué me escribió X en Chat', "
-        "'leé el Google Chat con…'."
+        "contact=email obligatorio (ej. ana@gmail.com). "
+        "NO es Gmail. Usar ante 'qué me escribió X en Chat'."
     )
     chat_send_description = (
-        "Envía un mensaje por Google Chat a un contacto. "
-        "contact=email, text=mensaje. Usar ante 'decile por Chat a…', "
-        "'mandale un Google Chat a…'."
+        "Envía un mensaje por Google Chat (NO Gmail). "
+        "Parámetros OBLIGATORIOS juntos: contact=email del destinatario, "
+        "text=cuerpo del mensaje. "
+        "Si el usuario ya dijo el email antes y ahora solo da el texto, "
+        "reutilizá ese email y llamá esta tool YA. "
+        "Ejemplo: contact='juan@gmail.com', text='Llego en 10'."
     )
     if account_label != "default":
         list_description = (
@@ -611,14 +619,17 @@ async def handle_user_message(
     latitude: float | None = None,
     longitude: float | None = None,
     source_language: str | None = None,
+    history: list[dict] | None = None,
 ) -> tuple[str, list, str | None]:
     """
     Responde un mensaje usando herramientas built-in y las que el usuario conectó.
     Devuelve (texto_hablado, acciones_para_la_app, idioma_tts_opcional).
+    `history` son turnos previos {role, content} para multi-turno por voz.
     """
     if not settings.anthropic_api_key:
         raise RuntimeError("Falta ANTHROPIC_API_KEY en la configuración.")
 
+    from app.services import conversation_memory as memory
     from app.services import translate as translate_service
 
     user = db.query(User).filter(User.id == user_id).first()
@@ -646,12 +657,30 @@ async def handle_user_message(
             user.translator_lang_b,
             source_hint=source_language,
         )
+        memory.remember_turn(user_id, message, translated)
         return translated, [], speak_lang
 
     agent = await _build_agent(
         user_id, db, persona=persona, latitude=latitude, longitude=longitude
     )
-    result = await agent.ainvoke({"messages": [{"role": "user", "content": message}]})
+    prior = memory.merge_history(user_id, history)
+    agent_messages = memory.build_agent_messages(prior, message)
+    result = await agent.ainvoke({"messages": agent_messages})
 
     last_message = result["messages"][-1]
-    return last_message.content, drain_client_actions(), None
+    reply = last_message.content
+    if isinstance(reply, list):
+        parts = []
+        for block in reply:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text") or ""))
+            elif hasattr(block, "text"):
+                parts.append(str(block.text))
+        reply = " ".join(p for p in parts if p).strip()
+    else:
+        reply = str(reply or "").strip()
+
+    memory.remember_turn(user_id, message, reply)
+    return reply, drain_client_actions(), None

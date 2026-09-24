@@ -84,13 +84,17 @@ async def voice_turn(
     audio: UploadFile = File(...),
     latitude: float | None = Form(None),
     longitude: float | None = Form(None),
+    history: str | None = Form(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
     Un solo request: audio → transcript → respuesta → audio TTS.
     Recorta latencia al evitar 2 round-trips extra a Vercel.
+    `history` es JSON opcional de turnos previos [{role, content}, ...].
     """
+    from app.services.conversation_memory import parse_history_payload
+
     audio_bytes = await audio.read()
     candidates = None
     if current_user.translator_lang_a and current_user.translator_lang_b:
@@ -118,6 +122,7 @@ async def voice_turn(
             latitude=latitude,
             longitude=longitude,
             source_language=stt.language,
+            history=parse_history_payload(history),
         )
     except ToolServerUnavailable:
         raise HTTPException(
