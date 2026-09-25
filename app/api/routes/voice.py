@@ -203,8 +203,18 @@ async def voice_turn(
         )
 
     try:
+        reply_text = (reply or "").strip()
+        if not reply_text:
+            return TurnResponse(
+                transcript=transcript,
+                reply=reply or "",
+                actions=actions,
+                speak_language=speak_language,
+                detected_language=stt.language,
+                audio_base64="",
+            )
         tts_bytes = await synthesize_speech(
-            reply,
+            reply_text,
             persona=current_user.persona,
             language=speak_language,
             slow=bool(getattr(current_user, "speak_slow", False)),

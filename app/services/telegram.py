@@ -392,6 +392,74 @@ def send_message(db: Session, user_id: int, contact: str, text: str) -> str:
         return _friendly_error(exc)
 
 
+def _parse_since(since_iso: str | None) -> datetime | None:
+    raw = (since_iso or "").strip()
+    if not raw:
+        return None
+    try:
+        text = raw.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _msg_date_utc(msg: Any) -> datetime | None:
+    dt = getattr(msg, "date", None)
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def poll_incoming_messages(
+    db: Session,
+    user_id: int,
+    since_iso: str | None = None,
+    max_dialogs: int = 20,
+    max_per_dialog: int = 4,
+) -> dict:
+    """
+    Detecta mensajes nuevos de Telegram desde `since_iso`.
+
+    Sin `since` (primer poll): no alerta historial; solo cursor = ahora.
+    Omite mensajes propios (`out`).
+    """
+    cursor_out = _now_iso()
+    session_str = _session_for_user(db, user_id)
+    if not session_str:
+        return {"messages": [], "cursor": None, "connected": False}
+
+    since = _parse_since(since_iso)
+    if since is None:
+        return {"messages": [], "cursor": cursor_out, "connected": True}
+
+    try:
+        return _run(
+            _poll_incoming_net(
+                session_str,
+                since=since,
+                cursor_fallback=cursor_out,
+                max_dialogs=max_dialogs,
+                max_per_dialog=max_per_dialog,
+            )
+        )
+    except Exception:
+        return {
+            "messages": [],
+            "cursor": since_iso or cursor_out,
+            "connected": True,
+            "error": "telegram_unavailable",
+        }
+
+
 def _session_for_user(db: Session, user_id: int) -> str | None:
     row = db.query(TelegramCredential).filter(TelegramCredential.user_id == user_id).first()
     if row is None or row.login_stage != "connected" or not row.session_encrypted:
@@ -597,5 +665,91 @@ async def _send_message_net(session_str: str, contact: str, text: str) -> str:
             return f"No encontré a «{contact}» en Telegram."
         await client.send_message(entity, text)
         return f"Listo, le mandé por Telegram a {contact}."
+    finally:
+        await client.disconnect()
+
+
+def _sender_label(msg: Any, fallback: str) -> str:
+    sender = getattr(msg, "sender", None)
+    if sender is None:
+        return fallback
+    first = (getattr(sender, "first_name", None) or "").strip()
+    last = (getattr(sender, "last_name", None) or "").strip()
+    full = f"{first} {last}".strip()
+    if full:
+        return full
+    uname = (getattr(sender, "username", None) or "").strip()
+    if uname:
+        return uname
+    title = (getattr(sender, "title", None) or "").strip()
+    return title or fallback
+
+
+async def _poll_incoming_net(
+    session_str: str,
+    *,
+    since: datetime,
+    cursor_fallback: str,
+    max_dialogs: int,
+    max_per_dialog: int,
+) -> dict:
+    client = await _client_from_session(session_str)
+    incoming: list[dict] = []
+    latest = since
+    try:
+        dialogs_seen = 0
+        async for dialog in client.iter_dialogs(limit=max(5, min(int(max_dialogs or 20), 30))):
+            dialogs_seen += 1
+            chat_name = (dialog.name or "").strip() or "Alguien"
+            unread = int(getattr(dialog, "unread_count", 0) or 0)
+            last = getattr(dialog, "message", None)
+            last_dt = _msg_date_utc(last) if last is not None else None
+
+            # Sin unread y el último mensaje es viejo → no vale la pena pedir historial.
+            if unread <= 0 and (last_dt is None or last_dt <= since):
+                continue
+
+            n = max(1, min(max(unread, 2), int(max_per_dialog or 4)))
+            try:
+                msgs = await client.get_messages(dialog.entity, limit=n)
+            except Exception:
+                continue
+
+            for m in msgs or []:
+                if not m or bool(getattr(m, "out", False)):
+                    continue
+                text = (getattr(m, "message", None) or "").strip()
+                if not text:
+                    continue
+                mdate = _msg_date_utc(m)
+                if mdate is None or mdate <= since:
+                    continue
+                if mdate > latest:
+                    latest = mdate
+                text = re.sub(r"\s+", " ", text)[:280]
+                if getattr(m, "sender", None) is None:
+                    try:
+                        await m.get_sender()
+                    except Exception:
+                        pass
+                who = _sender_label(m, chat_name)
+                incoming.append(
+                    {
+                        "from": who,
+                        "text": text,
+                        "chat": chat_name,
+                        "id": str(getattr(m, "id", "") or ""),
+                        "create_time": mdate.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    }
+                )
+
+        incoming.sort(key=lambda m: m.get("create_time") or "")
+        if incoming:
+            cursor_out = incoming[-1]["create_time"]
+        elif latest > since:
+            cursor_out = latest.strftime("%Y-%m-%dT%H:%M:%SZ")
+        else:
+            cursor_out = cursor_fallback
+        return {"messages": incoming[:12], "cursor": cursor_out, "connected": True}
     finally:
         await client.disconnect()

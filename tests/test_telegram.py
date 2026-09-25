@@ -115,3 +115,73 @@ def test_start_service_connection_telegram_voice_hint(db):
     tools = {t.name: t for t in build_builtin_tools(user_id=user_id, db=db)}
     msg = tools["start_service_connection"].invoke({"service": "telegram"})
     assert "número" in msg.lower() or "telegram" in msg.lower()
+
+
+def test_poll_incoming_not_connected(db, monkeypatch):
+    monkeypatch.setattr(telegram_service.settings, "telegram_api_id", 35059468)
+    monkeypatch.setattr(telegram_service.settings, "telegram_api_hash", "fakehash")
+    user_id = _user(db)
+    out = telegram_service.poll_incoming_messages(db, user_id, since_iso=None)
+    assert out["connected"] is False
+    assert out["messages"] == []
+
+
+def test_poll_incoming_first_cursor_no_history(db, monkeypatch):
+    from app.core.crypto import encrypt
+    from app.models.telegram_credential import TelegramCredential
+
+    monkeypatch.setattr(telegram_service.settings, "telegram_api_id", 35059468)
+    monkeypatch.setattr(telegram_service.settings, "telegram_api_hash", "fakehash")
+    user_id = _user(db)
+    row = TelegramCredential(
+        user_id=user_id,
+        login_stage="connected",
+        session_encrypted=encrypt("fake-session"),
+        account_label="default",
+    )
+    db.add(row)
+    db.commit()
+
+    out = telegram_service.poll_incoming_messages(db, user_id, since_iso=None)
+    assert out["connected"] is True
+    assert out["messages"] == []
+    assert out["cursor"]
+
+
+def test_poll_incoming_filters_new(db, monkeypatch):
+    from app.core.crypto import encrypt
+    from app.models.telegram_credential import TelegramCredential
+
+    monkeypatch.setattr(telegram_service.settings, "telegram_api_id", 35059468)
+    monkeypatch.setattr(telegram_service.settings, "telegram_api_hash", "fakehash")
+    user_id = _user(db)
+    row = TelegramCredential(
+        user_id=user_id,
+        login_stage="connected",
+        session_encrypted=encrypt("fake-session"),
+        account_label="default",
+    )
+    db.add(row)
+    db.commit()
+
+    async def fake_poll(*_a, **_k):
+        return {
+            "messages": [
+                {
+                    "from": "Ana",
+                    "text": "hola",
+                    "chat": "Ana",
+                    "id": "1",
+                    "create_time": "2026-09-25T12:00:00Z",
+                }
+            ],
+            "cursor": "2026-09-25T12:00:00Z",
+            "connected": True,
+        }
+
+    monkeypatch.setattr(telegram_service, "_poll_incoming_net", fake_poll)
+    out = telegram_service.poll_incoming_messages(
+        db, user_id, since_iso="2026-09-25T11:00:00Z"
+    )
+    assert len(out["messages"]) == 1
+    assert out["messages"][0]["from"] == "Ana"
