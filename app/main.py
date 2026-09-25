@@ -8,6 +8,7 @@ from app.models import (  # noqa: F401 — necesario para que create_all vea los
     connector,
     google_calendar_credential,
     habit,
+    login_exchange,
     mercadopago_credential,
     note,
     teams_calendar_credential,

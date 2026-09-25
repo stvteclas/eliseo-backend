@@ -2,8 +2,9 @@
 Login con Google (OAuth web) separado del conector de Calendar.
 
   1. GET /auth/google/authorize → URL de Google (openid email profile + PKCE)
-  2. Callback GET /auth/google/callback → crea/busca usuario → redirige a
-     /auth/google/success?token=JWT para que openAuthSessionAsync lo capture.
+  2. Callback GET /auth/google/callback → crea/busca usuario → redirige con
+     ?code= (un solo uso, corto). La app canjea el code por JWT en
+     POST /auth/google/exchange (el JWT no viaja en la URL).
 """
 
 from __future__ import annotations
@@ -15,12 +16,13 @@ import secrets
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal, get_db
 from app.core.oauth_pages import oauth_failure_page, oauth_page
 from app.core.oauth_redirect import safe_app_redirect, with_query
 from app.core.security import (
@@ -31,7 +33,9 @@ from app.core.security import (
     extract_login_code_verifier,
     hash_password,
 )
+from app.models.login_exchange import consume_code, issue_code, purge_expired
 from app.models.user import User
+from app.schemas.user import Token
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +51,10 @@ GOOGLE_NO_PASSWORD_PREFIX = "google-oauth:"
 AUTH_URL = "https://accounts.google.com/o/oauth2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+
+
+class ExchangeBody(BaseModel):
+    code: str = Field(min_length=8, max_length=80)
 
 
 def resolved_google_login_redirect_uri() -> str:
@@ -232,26 +240,39 @@ def google_login_callback(code: str | None = None, state: str | None = None, err
     db = SessionLocal()
     try:
         user = _upsert_google_user(db, email)
-        token = create_access_token(user.id)
+        try:
+            purge_expired(db)
+        except Exception:
+            pass
+        login_code = issue_code(db, user.id)
         app_return = safe_app_redirect(extract_login_app_redirect(state or ""))
         if app_return:
-            # Deep link: openAuthSessionAsync cierra el browser al ver esta URL.
-            return RedirectResponse(url=with_query(app_return, token=token), status_code=302)
-        success = f"{_public_base()}/auth/google/success?{urlencode({'token': token})}"
+            return RedirectResponse(url=with_query(app_return, code=login_code), status_code=302)
+        success = f"{_public_base()}/auth/google/success?{urlencode({'code': login_code})}"
         return RedirectResponse(url=success, status_code=302)
     except Exception as exc:
-        logger.exception("Fallo DB/JWT en login Google")
+        logger.exception("Fallo DB/código en login Google")
         return oauth_failure_page("No se pudo crear la sesión de Eliseo.", exc)
     finally:
         db.close()
 
 
+@router.post("/exchange", response_model=Token)
+def exchange_login_code(body: ExchangeBody, db: Session = Depends(get_db)):
+    """Canjea el code de un solo uso (del deep link) por el access JWT."""
+    user_id = consume_code(db, body.code)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Código inválido o vencido. Volvé a iniciar sesión.")
+    return Token(access_token=create_access_token(user_id))
+
+
 @router.get("/success")
-def google_login_success(token: str | None = None, app: str | None = None):
-    if not token:
-        return oauth_page("Falta el token. Volvé a la app e iniciá sesión otra vez.", 400)
+def google_login_success(code: str | None = None, token: str | None = None, app: str | None = None):
+    # `token` legacy ignorado a propósito (ya no devolvemos JWT en URL).
+    if not code:
+        return oauth_page("Falta el código. Volvé a la app e iniciá sesión otra vez.", 400)
     app_return = safe_app_redirect(app)
-    deep = with_query(app_return, token=token) if app_return else ""
+    deep = with_query(app_return, code=code) if app_return else ""
     deep_js = deep.replace("\\", "\\\\").replace("'", "\\'")
     html = (
         "<!doctype html><html><head><meta charset='utf-8'><title>Eliseo</title>"
