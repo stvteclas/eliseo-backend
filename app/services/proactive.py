@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from app.models.habit import Habit
 from app.models.user import User
 from app.services import prefs as prefs_service
-from app.services import telegram as telegram_service
 
 ARGENTINA_TZ = timezone(timedelta(hours=-3))
 
@@ -104,28 +103,6 @@ def build_hint(
                     "kind": "habit",
                     "id": hid,
                 }
-    except Exception:
-        pass
-
-    # 3) Telegram conectado: empujar a revisar (suave, 1 vez/día vía id)
-    try:
-        if telegram_service.is_connected(db, user.id):
-            day = datetime.now(ARGENTINA_TZ).strftime("%Y-%m-%d")
-            tid = f"tg-nudge:{day}"
-            if tid not in announced:
-                # Solo a partir de media mañana para no pisar el ritual
-                hour = datetime.now(ARGENTINA_TZ).hour
-                if hour >= 10:
-                    text = (
-                        "¿Miramos Telegram?"
-                        if driver or ambient
-                        else "Si querés, reviso Telegram por si te escribieron."
-                    )
-                    return {
-                        "hint": _short(text, 120 if driver or ambient else 180),
-                        "kind": "telegram",
-                        "id": tid,
-                    }
     except Exception:
         pass
 
