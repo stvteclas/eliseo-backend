@@ -3,8 +3,8 @@ Login con Google (OAuth web) separado del conector de Calendar.
 
   1. GET /auth/google/authorize → URL de Google (openid email profile + PKCE)
   2. Callback GET /auth/google/callback → crea/busca usuario → redirige con
-     ?code= (un solo uso, corto). La app canjea el code por JWT en
-     POST /auth/google/exchange (el JWT no viaja en la URL).
+     ?code= (un solo uso) y ?token= (JWT). El APK publicado solo lee token.
+     El APK nuevo canjea el code en POST /auth/google/exchange.
 """
 
 from __future__ import annotations
@@ -245,10 +245,16 @@ def google_login_callback(code: str | None = None, state: str | None = None, err
         except Exception:
             pass
         login_code = issue_code(db, user.id)
+        # El APK ya publicado solo parsea ?token= en el deep link.
+        # code queda para el canje del APK nuevo; token desbloquea el build actual.
+        access_jwt = create_access_token(user.id)
         app_return = safe_app_redirect(extract_login_app_redirect(state or ""))
         if app_return:
-            return RedirectResponse(url=with_query(app_return, code=login_code), status_code=302)
-        success = f"{_public_base()}/auth/google/success?{urlencode({'code': login_code})}"
+            return RedirectResponse(
+                url=with_query(app_return, code=login_code, token=access_jwt),
+                status_code=302,
+            )
+        success = f"{_public_base()}/auth/google/success?{urlencode({'code': login_code, 'token': access_jwt})}"
         return RedirectResponse(url=success, status_code=302)
     except Exception as exc:
         logger.exception("Fallo DB/código en login Google")
@@ -268,11 +274,11 @@ def exchange_login_code(body: ExchangeBody, db: Session = Depends(get_db)):
 
 @router.get("/success")
 def google_login_success(code: str | None = None, token: str | None = None, app: str | None = None):
-    # `token` legacy ignorado a propósito (ya no devolvemos JWT en URL).
-    if not code:
+    if not code and not token:
         return oauth_page("Falta el código. Volvé a la app e iniciá sesión otra vez.", 400)
     app_return = safe_app_redirect(app)
-    deep = with_query(app_return, code=code) if app_return else ""
+    params = {k: v for k, v in (("code", code), ("token", token)) if v}
+    deep = with_query(app_return, **params) if app_return else ""
     deep_js = deep.replace("\\", "\\\\").replace("'", "\\'")
     html = (
         "<!doctype html><html><head><meta charset='utf-8'><title>Eliseo</title>"
