@@ -22,6 +22,43 @@ from app.services.voice import synthesize_speech, transcribe_audio
 router = APIRouter(prefix="/voice", tags=["voice"])
 
 
+def _fold_es(text: str) -> str:
+    return (
+        (text or "")
+        .lower()
+        .replace("á", "a")
+        .replace("é", "e")
+        .replace("í", "i")
+        .replace("ó", "o")
+        .replace("ú", "u")
+        .replace("ü", "u")
+        .replace("ñ", "n")
+    )
+
+
+def _is_quiet_exit(transcript: str) -> bool:
+    """Frases para salir del silencio sin decir el wake name."""
+    t = _fold_es(transcript)
+    needles = (
+        "sali del silencio",
+        "salir del silencio",
+        "salgo del silencio",
+        "desactiva el silencio",
+        "desactiva silencio",
+        "desactivar silencio",
+        "apaga el silencio",
+        "apaga silencio",
+        "quita el silencio",
+        "quita silencio",
+        "termina el silencio",
+        "modo silencio off",
+        "no mas silencio",
+        "cancelar silencio",
+        "basta de silencio",
+    )
+    return any(n in t for n in needles)
+
+
 class TranscribeResponse(BaseModel):
     transcript: str
     detected_language: str | None = None
@@ -118,34 +155,31 @@ async def voice_turn(
         return TurnResponse(transcript="", reply="", audio_base64="")
 
     # Modo silencio: sin nombre de activación, no correr el agente (evita side-effects).
+    # Excepción: frases explícitas para SALIR del silencio (no requieren wake word).
     effective = transcript
     if bool(getattr(current_user, "quiet_mode", False)):
-        names = prefs_service.wake_names_for(current_user)
-        folded = (
-            transcript.lower()
-            .replace("á", "a")
-            .replace("é", "e")
-            .replace("í", "i")
-            .replace("ó", "o")
-            .replace("ú", "u")
-            .replace("ü", "u")
-            .replace("ñ", "n")
-        )
-        woke = any(n and n in folded for n in names)
-        if not woke:
-            return TurnResponse(transcript=transcript, reply="", audio_base64="")
-        for n in names:
-            if not n:
-                continue
-            effective = re.sub(
-                rf"\b{re.escape(n)}\b[,:]?\s*",
-                "",
-                effective,
-                count=1,
-                flags=re.IGNORECASE,
-            ).strip()
-        if not effective:
-            effective = "Decime"
+        if _is_quiet_exit(transcript):
+            prefs_service.set_quiet_mode(db, current_user.id, False)
+            db.refresh(current_user)
+            effective = "salí del modo silencio"
+        else:
+            names = prefs_service.wake_names_for(current_user)
+            folded = _fold_es(transcript)
+            woke = any(n and _fold_es(n) in folded for n in names)
+            if not woke:
+                return TurnResponse(transcript=transcript, reply="", audio_base64="")
+            for n in names:
+                if not n:
+                    continue
+                effective = re.sub(
+                    rf"\b{re.escape(n)}\b[,:]?\s*",
+                    "",
+                    effective,
+                    count=1,
+                    flags=re.IGNORECASE,
+                ).strip()
+            if not effective:
+                effective = "Decime"
 
     try:
         reply, actions, speak_language = await handle_user_message(

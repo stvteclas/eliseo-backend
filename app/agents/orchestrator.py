@@ -59,7 +59,10 @@ SYSTEM_PROMPT_TEMPLATE = (
     "sobre un tema o un texto, usá make_study_summary. "
     "Si piden poner música, usá play_music (abre Spotify o YouTube Music en el teléfono). "
     "Si piden parar la música, usá stop_music. "
-    "Si piden llamarme de otra forma, usá set_wake_name. "
+    "Si piden modo silencio, usá set_quiet_mode. "
+    "Si piden salí del silencio / desactivá silencio, usá set_quiet_mode(enabled=false). "
+    "Eso puede venir sin el nombre de activación. "
+
     "Si dicen dale/confirmá y hay algo pendiente, usá confirm_pending_action. "
     "Si cancelan, usá cancel_pending_action. "
     "Si piden 'qué me escribieron', usá get_inbox_digest. "
