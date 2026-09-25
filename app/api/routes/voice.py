@@ -41,11 +41,14 @@ def _is_quiet_exit(transcript: str) -> bool:
     t = _fold_es(transcript)
     needles = (
         "sali del silencio",
+        "sali del modo silencio",
         "salir del silencio",
+        "salir del modo silencio",
         "salgo del silencio",
         "desactiva el silencio",
         "desactiva silencio",
         "desactivar silencio",
+        "desactiva el modo silencio",
         "apaga el silencio",
         "apaga silencio",
         "quita el silencio",
@@ -55,6 +58,8 @@ def _is_quiet_exit(transcript: str) -> bool:
         "no mas silencio",
         "cancelar silencio",
         "basta de silencio",
+        "modo normal",
+        "escuchame normal",
     )
     return any(n in t for n in needles)
 
