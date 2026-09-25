@@ -26,6 +26,9 @@ class UserOut(BaseModel):
     meeting_mode: bool = False
     speak_slow: bool = False
     driver_mode: bool = False
+    privacy_mode: bool = False
+    ambient_mode: bool = False
+    morning_hour: int = 8
 
     class Config:
         from_attributes = True
@@ -40,7 +43,11 @@ class PersonaUpdate(BaseModel):
     confirm_sends: bool | None = None
     speak_slow: bool | None = None
     driver_mode: bool | None = None
+    privacy_mode: bool | None = None
+    ambient_mode: bool | None = None
+    morning_hour: int | None = Field(default=None, ge=5, le=11)
     clear_wake_name: bool = False
+
 
 class Token(BaseModel):
     access_token: str

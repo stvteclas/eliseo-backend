@@ -17,6 +17,7 @@ from app.agents.client_actions import queue_client_action
 from app.services import calculator as calculator_service
 from app.services import digest as digest_service
 from app.services import habits as habits_service
+from app.services import memory as memory_service
 from app.services import music as music_service
 from app.services import news as news_service
 from app.services import notes as notes_service
@@ -59,6 +60,13 @@ BUILTIN_TOOL_NAMES = [
     "get_daily_briefing",
     "get_today_overview",
     "get_inbox_digest",
+    "run_morning_ritual",
+    "remember_fact",
+    "recall_memory",
+    "forget_fact",
+    "set_privacy_mode",
+    "set_ambient_mode",
+    "set_morning_hour",
     "make_study_summary",
     "play_music",
     "stop_music",
@@ -395,6 +403,24 @@ def build_builtin_tools(
             return "No pude cambiar el modo conductor."
         return prefs_service.set_driver_mode(db, user_id, bool(enabled))
 
+    def set_privacy_mode(enabled: bool = True) -> str:
+        """Modo privado: siempre pedir dale antes de mandar."""
+        if user_id is None or db is None:
+            return "No pude cambiar el modo privado."
+        return prefs_service.set_privacy_mode(db, user_id, bool(enabled))
+
+    def set_ambient_mode(enabled: bool = True) -> str:
+        """Modo ambiente / parlante: respuestas cortas, avisos activos."""
+        if user_id is None or db is None:
+            return "No pude cambiar el modo ambiente."
+        return prefs_service.set_ambient_mode(db, user_id, bool(enabled))
+
+    def set_morning_hour(hour: float = 8) -> str:
+        """Hora del ritual automático de buenos días (5-11)."""
+        if user_id is None or db is None:
+            return "No pude guardar la hora."
+        return prefs_service.set_morning_hour(db, user_id, hour)
+
     def call_contact(name: str) -> str:
         """
         Pide a la app que busque un contacto por nombre y abra el marcador.
@@ -432,6 +458,36 @@ def build_builtin_tools(
         if user_id is None or db is None:
             return "No pude mirar la bandeja."
         return digest_service.inbox_digest(user_id, db)
+
+    def run_morning_ritual(work_destination: str = "") -> str:
+        """Ritual de buenos días: clima, agenda, mensajes, hábitos, memoria."""
+        if user_id is None or db is None:
+            return "No pude armar el ritual de la mañana."
+        return digest_service.morning_ritual(
+            user_id,
+            db,
+            latitude,
+            longitude,
+            work_destination=work_destination,
+        )
+
+    def remember_fact(fact: str, key: str = "") -> str:
+        """Guarda un hecho durable sobre el usuario."""
+        if user_id is None or db is None:
+            return "No pude guardar eso."
+        return memory_service.remember(db, user_id, fact, key=key or None)
+
+    def recall_memory(query: str = "") -> str:
+        """Recupera hechos guardados. query opcional para filtrar."""
+        if user_id is None or db is None:
+            return "No pude leer la memoria."
+        return memory_service.recall(db, user_id, query)
+
+    def forget_fact(query: str) -> str:
+        """Olvida hechos que coincidan con query."""
+        if user_id is None or db is None:
+            return "No pude olvidar eso."
+        return memory_service.forget(db, user_id, query)
 
     def set_wake_name(name: str) -> str:
         """Cambia cómo te gusta llamarme (wake word). La app sigue llamándose Eliseo."""
@@ -887,6 +943,21 @@ def build_builtin_tools(
             description="Activa o apaga modo conductor (respuestas ultra cortas).",
         ),
         StructuredTool.from_function(
+            func=set_privacy_mode,
+            name="set_privacy_mode",
+            description="Activa o apaga modo privado (siempre pedir dale antes de mandar).",
+        ),
+        StructuredTool.from_function(
+            func=set_ambient_mode,
+            name="set_ambient_mode",
+            description="Activa o apaga modo ambiente / parlante (respuestas cortas, avisos activos).",
+        ),
+        StructuredTool.from_function(
+            func=set_morning_hour,
+            name="set_morning_hour",
+            description="Define la hora (5-11) del ritual automático de buenos días.",
+        ),
+        StructuredTool.from_function(
             func=call_contact,
             name="call_contact",
             description="Busca un contacto por nombre en el teléfono y abre el marcador para llamar.",
@@ -897,7 +968,7 @@ def build_builtin_tools(
             description=(
                 "Resumen del día: hora, clima, agenda, mails y tráfico opcional. "
                 "work_destination opcional (ej. 'oficina'). "
-                "Usar ante 'buenos días', 'resumen del día'."
+                "Para 'buenos días' preferí run_morning_ritual."
             ),
         ),
         StructuredTool.from_function(
@@ -912,6 +983,29 @@ def build_builtin_tools(
                 "Resumen de qué me escribieron (mails sin leer + Chat + Telegram). "
                 "Usar ante 'qué me escribieron'."
             ),
+        ),
+        StructuredTool.from_function(
+            func=run_morning_ritual,
+            name="run_morning_ritual",
+            description=(
+                "Ritual de buenos días: clima, agenda, mensajes, hábitos y un dato de memoria. "
+                "Usar ante 'buenos días'."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=remember_fact,
+            name="remember_fact",
+            description="Guarda un hecho durable (recordá que…). key opcional para upsert.",
+        ),
+        StructuredTool.from_function(
+            func=recall_memory,
+            name="recall_memory",
+            description="Lista o busca hechos guardados sobre el usuario.",
+        ),
+        StructuredTool.from_function(
+            func=forget_fact,
+            name="forget_fact",
+            description="Olvida hechos que coincidan con query.",
         ),
         StructuredTool.from_function(
             func=make_study_summary,

@@ -32,6 +32,12 @@ class User(Base):
     speak_slow: Mapped[bool] = Column(Boolean, nullable=False, default=False)
     # Respuestas ultra cortas (manejar / manos libres).
     driver_mode: Mapped[bool] = Column(Boolean, nullable=False, default=False)
+    # Privacidad: fuerza confirmación antes de mandar.
+    privacy_mode: Mapped[bool] = Column(Boolean, nullable=False, default=False)
+    # Segunda mente / parlante: respuestas cortas, avisos suaves activos.
+    ambient_mode: Mapped[bool] = Column(Boolean, nullable=False, default=False)
+    # Hora local AR (0-23) para ritual matutino automático.
+    morning_hour: Mapped[int] = Column(Integer, nullable=False, default=8)
     # Modo traductor bidireccional: códigos ISO (es, ru, en...). Null = apagado.
     translator_lang_a: Mapped[str | None] = Column(String, nullable=True, default=None)
     translator_lang_b: Mapped[str | None] = Column(String, nullable=True, default=None)

@@ -43,16 +43,21 @@ from app.services import google_chat as google_chat_service
 
 
 SYSTEM_PROMPT_TEMPLATE = (
-    "Sos {name}, un asistente de voz argentino, cálido y directo. "
-    "Respondé corto, como si estuvieras hablando, no escribiendo un informe. "
-    "Nunca uses emojis, emoticones ni sus nombres (nada de blush, smile, etc.): "
-    "solo texto hablable. "
+    "Sos {name}, un asistente de voz argentino de verdad: hablás de vos, "
+    "cálido, directo, sin sonar a manual ni a call center. "
+    "Frases cortas y hablables. Tratá de usted solo si la memoria lo pide. "
+    "Nunca uses emojis, emoticones ni sus nombres (nada de blush, smile, etc.). "
+    "No mezcles inglés innecesario. "
     "Las herramientas son para datos o acciones externas "
     "(clima, hora, calendario, mails, Google Chat, pagos, notas, compras, hábitos, "
-    "cálculos, tráfico, viaje, noticias, traducción, modo traductor, temporizador, "
-    "pomodoro, respiración, avisos, contactos, resumen del día, bandeja, estudio, "
-    "música, nombre con el que te llaman, modo silencio, confirmación dale, "
+    "memoria personal, cálculos, tráfico, viaje, noticias, traducción, modo traductor, "
+    "temporizador, pomodoro, respiración, avisos, contactos, resumen del día, "
+    "ritual de buenos días, bandeja, estudio, música, nombre con el que te llaman, "
+    "modo silencio, modo privado, modo ambiente, modo conductor, confirmación dale, "
     "modo reunión, repetir, hablar despacio, Telegram, conexiones de servicios). "
+    "Si el usuario dice recordá / acordate / no te olvides, usá remember_fact. "
+    "Si pregunta qué sabés de mí / qué recordás, usá recall_memory. "
+    "Si pide olvidá eso, usá forget_fact. Usá la MEMORIA PERSONAL sin preguntar de nuevo. "
     "Si preguntan por tráfico, demora, cuánto tardan o cómo está el camino "
     "hacia un lugar, usá get_travel_time (con GPS si no dan origen). "
     "Si piden estudiar, resumir para un examen, fichas o que los pregunte "
@@ -62,11 +67,13 @@ SYSTEM_PROMPT_TEMPLATE = (
     "Si piden modo silencio, usá set_quiet_mode. "
     "Si piden salí del silencio / desactivá silencio, usá set_quiet_mode(enabled=false). "
     "Eso puede venir sin el nombre de activación. "
-
+    "Si piden modo privado / privacidad, usá set_privacy_mode. "
+    "Si piden modo ambiente / parlante / segunda mente, usá set_ambient_mode. "
     "Si dicen dale/sí/mandalo/confirmá y hay algo pendiente, usá confirm_pending_action. "
     "Si cancelan (no/cancelá/dejalo), usá cancel_pending_action. "
     "Si piden 'qué me escribieron', usá get_inbox_digest (mails, Chat y Telegram). "
-    "Si piden 'qué tengo hoy' o buenos días, usá get_today_overview o get_daily_briefing. "
+    "Si piden 'buenos días' o el ritual de la mañana, usá run_morning_ritual. "
+    "Si piden 'qué tengo hoy', usá get_today_overview o get_daily_briefing. "
     "Si piden modo conductor / estoy manejando, usá set_driver_mode. "
     "Si piden salí del modo conductor, usá set_driver_mode(enabled=false). "
     "Si piden 'acordate el viernes/mañana a las X', usá remind_at. "
@@ -119,12 +126,25 @@ def system_prompt_for_persona(
     display_name: str | None = None,
     extra: str | None = None,
     driver_mode: bool = False,
+    ambient_mode: bool = False,
+    privacy_mode: bool = False,
 ) -> str:
     name = (display_name or "").strip() or PERSONA_DISPLAY_NAME.get(
         persona, PERSONA_DISPLAY_NAME["elisse"]
     )
     base = SYSTEM_PROMPT_TEMPLATE.format(name=name)
-    if driver_mode:
+    if privacy_mode:
+        base += (
+            " MODO PRIVADO ACTIVO: antes de mandar mail, chat, Telegram, pago o broadcast "
+            "siempre pedí dale. No mandes nada sensible sin confirmación."
+        )
+    if ambient_mode:
+        base += (
+            " MODO AMBIENTE ACTIVO: sos la segunda mente del parlante. "
+            "Respuestas de 1 o 2 oraciones, tono suave, sin listas. "
+            "Los avisos proactivos están permitidos."
+        )
+    elif driver_mode:
         base += (
             " MODO CONDUCTOR ACTIVO: respondé en 1 o 2 oraciones muy cortas, "
             "sin listas, sin chamuyo. Priorizá seguridad y claridad."
@@ -708,6 +728,7 @@ async def _build_agent(
     latitude: float | None = None,
     longitude: float | None = None,
 ):
+    from app.services import memory as memory_service
     from app.services import telegram as telegram_service
 
     tools = await get_tools_for_user(user_id, db, latitude=latitude, longitude=longitude)
@@ -718,14 +739,25 @@ async def _build_agent(
         api_key=settings.anthropic_api_key,
     )
 
-    extra = telegram_service.agent_context(db, user_id)
+    extras = [
+        telegram_service.agent_context(db, user_id),
+        memory_service.agent_context(db, user_id),
+    ]
+    extra = "\n\n".join(e for e in extras if (e or "").strip())
     u = db.query(User).filter(User.id == user_id).first()
     driver = bool(u is not None and getattr(u, "driver_mode", False))
+    ambient = bool(u is not None and getattr(u, "ambient_mode", False))
+    privacy = bool(u is not None and getattr(u, "privacy_mode", False))
     return create_react_agent(
         model,
         tools,
         prompt=system_prompt_for_persona(
-            persona, display_name=display_name, extra=extra, driver_mode=driver
+            persona,
+            display_name=display_name,
+            extra=extra,
+            driver_mode=driver,
+            ambient_mode=ambient,
+            privacy_mode=privacy,
         ),
     )
 

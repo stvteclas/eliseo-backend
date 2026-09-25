@@ -294,15 +294,18 @@ async def voice_turn(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="El servidor de herramientas (MCP) no está disponible.",
             )
-        # Lecturas largas: partir y pedir «seguí» (excepto modo conductor).
-        if not bool(getattr(current_user, "driver_mode", False)):
-            reply = reading_service.maybe_start_if_long(current_user.id, reply or "")
-        else:
+        # Lecturas largas: partir y pedir «seguí» (excepto modo conductor/ambiente).
+        if bool(getattr(current_user, "driver_mode", False)) or bool(
+            getattr(current_user, "ambient_mode", False)
+        ):
             reading_service.clear(current_user.id)
             text = (reply or "").strip()
-            if len(text) > 220:
-                cut = text[:220].rsplit(" ", 1)[0].rstrip(",.;:")
+            limit = 160 if getattr(current_user, "ambient_mode", False) else 220
+            if len(text) > limit:
+                cut = text[:limit].rsplit(" ", 1)[0].rstrip(",.;:")
                 reply = cut + "."
+        else:
+            reply = reading_service.maybe_start_if_long(current_user.id, reply or "")
 
     try:
         reply_text = (reply or "").strip()

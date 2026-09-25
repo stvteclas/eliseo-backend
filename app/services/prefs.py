@@ -23,7 +23,6 @@ def wake_names_for(user: User | None, persona: str | None = None) -> list[str]:
     names = ["eliseo", "elisse", "elise"]
     custom = display_name_for(user, persona).strip().lower()
     if custom:
-        # sin acentos simples
         folded = (
             custom.replace("á", "a")
             .replace("é", "e")
@@ -36,7 +35,6 @@ def wake_names_for(user: User | None, persona: str | None = None) -> list[str]:
         names.insert(0, folded)
         if custom not in names:
             names.insert(0, custom)
-    # únicos preservando orden
     seen: set[str] = set()
     out: list[str] = []
     for n in names:
@@ -67,7 +65,6 @@ def set_wake_name(db: Session, user_id: int, name: str) -> str:
         return f"Listo, volvé a llamarme {display_name_for(user)}."
     if len(raw) > 40:
         return "Ese nombre es muy largo. Probá con una o dos palabras."
-    # Evitar basura
     if any(c.isdigit() for c in raw) and len(raw) < 3:
         return "Elegí un nombre más claro."
     user.wake_name = raw[:40]
@@ -96,6 +93,8 @@ def set_confirm_sends(db: Session, user_id: int, enabled: bool) -> str:
     if user is None:
         return "No encontré tu usuario."
     user.confirm_sends = bool(enabled)
+    if not enabled and bool(getattr(user, "privacy_mode", False)):
+        user.privacy_mode = False
     db.add(user)
     db.commit()
     if enabled:
@@ -136,6 +135,52 @@ def set_driver_mode(db: Session, user_id: int, enabled: bool) -> str:
     return "Listo, salí del modo conductor."
 
 
+def set_privacy_mode(db: Session, user_id: int, enabled: bool) -> str:
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        return "No encontré tu usuario."
+    user.privacy_mode = bool(enabled)
+    if enabled:
+        user.confirm_sends = True
+    db.add(user)
+    db.commit()
+    if enabled:
+        return (
+            "Modo privado activado: no mando mails, chats, Telegram ni pagos "
+            "sin que me digas dale. Estoy de tu lado."
+        )
+    return "Listo, salí del modo privado."
+
+
+def set_ambient_mode(db: Session, user_id: int, enabled: bool) -> str:
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        return "No encontré tu usuario."
+    user.ambient_mode = bool(enabled)
+    db.add(user)
+    db.commit()
+    if enabled:
+        return (
+            "Modo ambiente: te escucho en el parlante, respondo corto "
+            "y te aviso cosas útiles sin pedirte el nombre. "
+            "Decí salí del modo ambiente para volver."
+        )
+    return "Listo, salí del modo ambiente."
+
+
+def set_morning_hour(db: Session, user_id: int, hour: float = 8) -> str:
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        return "No encontré tu usuario."
+    h = int(hour if hour is not None else 8)
+    if h < 5 or h > 11:
+        return "Elegí una hora entre las 5 y las 11 de la mañana."
+    user.morning_hour = h
+    db.add(user)
+    db.commit()
+    return f"Listo, el ritual de buenos días queda alrededor de las {h}:00."
+
+
 def prefs_public(user: User) -> dict:
     return {
         "persona": user.persona,
@@ -146,4 +191,7 @@ def prefs_public(user: User) -> dict:
         "meeting_mode": is_meeting_mode(user),
         "speak_slow": bool(getattr(user, "speak_slow", False)),
         "driver_mode": bool(getattr(user, "driver_mode", False)),
+        "privacy_mode": bool(getattr(user, "privacy_mode", False)),
+        "ambient_mode": bool(getattr(user, "ambient_mode", False)),
+        "morning_hour": int(getattr(user, "morning_hour", 8) or 8),
     }

@@ -26,6 +26,9 @@ def _user_out(user: User) -> UserOut:
         meeting_mode=prefs["meeting_mode"],
         speak_slow=prefs["speak_slow"],
         driver_mode=prefs["driver_mode"],
+        privacy_mode=prefs["privacy_mode"],
+        ambient_mode=prefs["ambient_mode"],
+        morning_hour=prefs["morning_hour"],
     )
 
 
@@ -94,6 +97,14 @@ def update_me(
         current_user.speak_slow = data.speak_slow
     if data.driver_mode is not None:
         current_user.driver_mode = data.driver_mode
+    if data.privacy_mode is not None:
+        current_user.privacy_mode = data.privacy_mode
+        if data.privacy_mode:
+            current_user.confirm_sends = True
+    if data.ambient_mode is not None:
+        current_user.ambient_mode = data.ambient_mode
+    if data.morning_hour is not None:
+        current_user.morning_hour = int(data.morning_hour)
     db.add(current_user)
     db.commit()
     db.refresh(current_user)

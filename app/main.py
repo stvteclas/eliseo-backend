@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from sqlalchemy import inspect, text
 
-from app.api.routes import auth, auth_google, chat, connectors, google_calendar, health, mercadopago, teams_calendar, telegram, voice
+from app.api.routes import auth, auth_google, chat, connectors, digest, google_calendar, health, mercadopago, proactive, teams_calendar, telegram, voice
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.models import (  # noqa: F401 — necesario para que create_all vea los modelos
@@ -13,6 +13,7 @@ from app.models import (  # noqa: F401 — necesario para que create_all vea los
     teams_calendar_credential,
     telegram_credential,
     user,
+    user_memory,
 )
 
 app = FastAPI(title="Eliseo", version="0.1.0")
@@ -90,6 +91,22 @@ def _ensure_prefs_and_notes_columns() -> None:
                         f"ALTER TABLE users ADD COLUMN driver_mode BOOLEAN DEFAULT {bool_false} NOT NULL"
                     )
                 )
+            if "privacy_mode" not in columns:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE users ADD COLUMN privacy_mode BOOLEAN DEFAULT {bool_false} NOT NULL"
+                    )
+                )
+            if "ambient_mode" not in columns:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE users ADD COLUMN ambient_mode BOOLEAN DEFAULT {bool_false} NOT NULL"
+                    )
+                )
+            if "morning_hour" not in columns:
+                conn.execute(
+                    text("ALTER TABLE users ADD COLUMN morning_hour INTEGER DEFAULT 8 NOT NULL")
+                )
     if "notes" in tables:
         ncols = {col["name"] for col in inspector.get_columns("notes")}
         if "done" not in ncols:
@@ -108,10 +125,12 @@ app.include_router(auth.router)
 app.include_router(auth_google.router)
 app.include_router(chat.router)
 app.include_router(connectors.router)
+app.include_router(digest.router)
 app.include_router(google_calendar.router)
 app.include_router(mercadopago.router)
 app.include_router(teams_calendar.router)
 app.include_router(telegram.router)
+app.include_router(proactive.router)
 app.include_router(voice.router)
 
 
