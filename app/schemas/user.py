@@ -25,6 +25,7 @@ class UserOut(BaseModel):
     confirm_sends: bool = False
     meeting_mode: bool = False
     speak_slow: bool = False
+    driver_mode: bool = False
 
     class Config:
         from_attributes = True
@@ -38,8 +39,8 @@ class PersonaUpdate(BaseModel):
     quiet_mode: bool | None = None
     confirm_sends: bool | None = None
     speak_slow: bool | None = None
+    driver_mode: bool | None = None
     clear_wake_name: bool = False
-
 
 class Token(BaseModel):
     access_token: str

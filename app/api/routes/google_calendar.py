@@ -230,3 +230,84 @@ def chat_updates(
     if creds is None:
         raise HTTPException(status_code=404, detail="Google no está conectado.")
     return google_chat_service.poll_incoming_dm_messages(creds, since_iso=since)
+
+
+@router.get("/soon")
+def calendar_soon(
+    within_minutes: int = Query(default=12, ge=3, le=60),
+    account_label: str = "default",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    Eventos que empiezan en los próximos `within_minutes`.
+    La app usa esto para avisar «tenés reunión en 10 minutos».
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from googleapiclient.discovery import build
+
+    from app.services import prefs as prefs_service
+
+    if bool(getattr(current_user, "quiet_mode", False)) or prefs_service.is_meeting_mode(
+        current_user
+    ):
+        return {"events": [], "suppressed": True}
+
+    creds = _google_credentials_for_user(db, current_user.id, account_label)
+    if creds is None:
+        return {"events": [], "connected": False}
+
+    now = datetime.now(timezone.utc)
+    time_max = now + timedelta(minutes=int(within_minutes))
+    events_out: list[dict] = []
+    try:
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        calendars = [("primary", "primary")]
+        try:
+            listed = service.calendarList().list().execute()
+            calendars = [
+                (c.get("id") or "primary", c.get("summary") or "Agenda")
+                for c in (listed.get("items") or [])
+                if c.get("id")
+            ] or calendars
+        except Exception:
+            pass
+        for cal_id, cal_name in calendars[:8]:
+            try:
+                result = (
+                    service.events()
+                    .list(
+                        calendarId=cal_id,
+                        timeMin=now.isoformat(),
+                        timeMax=time_max.isoformat(),
+                        maxResults=6,
+                        singleEvents=True,
+                        orderBy="startTime",
+                    )
+                    .execute()
+                )
+            except Exception:
+                continue
+            for event in result.get("items") or []:
+                start = event.get("start") or {}
+                when = start.get("dateTime") or start.get("date")
+                if not when:
+                    continue
+                title = (event.get("summary") or "Evento").strip()
+                eid = (event.get("id") or f"{cal_id}:{when}:{title}")[:120]
+                events_out.append(
+                    {
+                        "id": eid,
+                        "title": title[:120],
+                        "start": when,
+                        "calendar": cal_name,
+                    }
+                )
+    except Exception:
+        logger.exception("calendar_soon falló")
+        return {"events": [], "connected": True, "error": "calendar_unavailable"}
+
+    # Más cercano primero
+    events_out.sort(key=lambda e: e.get("start") or "")
+    return {"events": events_out[:8], "connected": True}

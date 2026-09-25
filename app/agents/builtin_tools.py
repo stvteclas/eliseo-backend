@@ -22,10 +22,12 @@ from app.services import news as news_service
 from app.services import notes as notes_service
 from app.services import pending_confirm
 from app.services import prefs as prefs_service
+from app.services import reading as reading_service
 from app.services import study as study_service
 from app.services import telegram as telegram_service
 from app.services import traffic as traffic_service
 from app.services import translate as translate_service
+from app.services import when_parse
 from app.services.weather import get_weather_report
 
 ARGENTINA_TZ = timezone(timedelta(hours=-3))
@@ -47,6 +49,12 @@ BUILTIN_TOOL_NAMES = [
     "start_translator_mode",
     "stop_translator_mode",
     "schedule_local_reminder",
+    "remind_at",
+    "remind_habit",
+    "quick_reply",
+    "continue_reading",
+    "stop_reading",
+    "set_driver_mode",
     "call_contact",
     "get_daily_briefing",
     "get_today_overview",
@@ -281,6 +289,112 @@ def build_builtin_tools(
             human = f"{m} minutos" if s == 0 else f"{m} minutos y {s} segundos"
         return f"Dale, en {human} te aviso: {body}."
 
+    def remind_at(message: str, when: str) -> str:
+        """
+        Recordatorio con momento en español: «mañana a las 9», «el viernes a las 18», «en 2 horas».
+        """
+        body = (message or "").strip()
+        if not body:
+            return "Decime qué te tengo que recordar."
+        total = when_parse.seconds_until(when or "")
+        if total is None:
+            return (
+                "No entendí cuándo. Probá «mañana a las 9», "
+                "«el viernes a las 18» o «en 30 minutos»."
+            )
+        queue_client_action(
+            {
+                "type": "local_notification",
+                "seconds": total,
+                "title": "Eliseo",
+                "body": body[:200],
+            }
+        )
+        if total < 3600:
+            human = f"{max(1, total // 60)} minutos"
+        elif total < 86400:
+            human = f"{max(1, total // 3600)} horas"
+        else:
+            human = f"{max(1, total // 86400)} días"
+        return f"Listo, en unos {human} te aviso: {body}."
+
+    def remind_habit(name: str, when: str = "en 1 hora") -> str:
+        """Aviso para un hábito (agua, pastilla…). when en español relativo."""
+        habit = (name or "").strip()
+        if not habit:
+            return "Decime qué hábito te recuerdo."
+        return remind_at(f"Hábito: {habit}. ¿Lo marcamos?", when or "en 1 hora")
+
+    def quick_reply(contact: str, text: str, channel: str = "telegram") -> str:
+        """
+        Respuesta rápida: «decile a Ana que llego».
+        channel: telegram | chat | email
+        """
+        if user_id is None or db is None:
+            return "No pude mandar ahora."
+        who = (contact or "").strip()
+        body = (text or "").strip()
+        if not who:
+            return "Decime a quién."
+        if not body:
+            return "Decime qué le digo."
+        ch = (channel or "telegram").strip().lower()
+        if ch in {"tg", "telegram"}:
+            return send_telegram_message(who, body)
+        if ch in {"chat", "google_chat", "hangouts"}:
+            from app.agents.orchestrator import build_calendar_tools
+            from app.models.user import User
+
+            tools = {t.name: t for t in build_calendar_tools(user_id, db)}
+            send = tools.get("send_chat_message")
+            if send is None:
+                return "Google Chat no está conectado."
+
+            def _run() -> str:
+                return send.invoke({"contact": who, "text": body})
+
+            user = db.query(User).filter(User.id == user_id).first() if user_id else None
+            if user is not None and user.confirm_sends:
+                pending_confirm.set_pending(user_id, f"chat a {who}", _run)
+                return f"¿Le mando por Chat a {who}: «{body}»? Decí dale o cancelá."
+            return _run()
+        if ch in {"email", "mail", "gmail"}:
+            from app.agents.orchestrator import build_calendar_tools
+            from app.models.user import User
+
+            tools = {t.name: t for t in build_calendar_tools(user_id, db)}
+            send = tools.get("send_email")
+            if send is None:
+                return "Gmail no está conectado."
+
+            def _run_mail() -> str:
+                return send.invoke({"to": who, "subject": "Mensaje", "body": body})
+
+            user = db.query(User).filter(User.id == user_id).first() if user_id else None
+            if user is not None and user.confirm_sends:
+                pending_confirm.set_pending(user_id, f"mail a {who}", _run_mail)
+                return f"¿Le mando mail a {who}? Decí dale o cancelá."
+            return _run_mail()
+        return "Canal: telegram, chat o email."
+
+    def continue_reading() -> str:
+        """Sigue la lectura por partes."""
+        if user_id is None:
+            return "No hay usuario."
+        return reading_service.continue_reading(user_id)
+
+    def stop_reading() -> str:
+        """Corta la lectura por partes."""
+        if user_id is None:
+            return "No hay usuario."
+        return reading_service.stop_reading(user_id)
+
+    def set_driver_mode(enabled: bool = True) -> str:
+        """Modo conductor: respuestas muy cortas."""
+        if user_id is None or db is None:
+            return "No pude cambiar el modo conductor."
+        return prefs_service.set_driver_mode(db, user_id, bool(enabled))
+
     def call_contact(name: str) -> str:
         """
         Pide a la app que busque un contacto por nombre y abra el marcador.
@@ -362,18 +476,40 @@ def build_builtin_tools(
         return habits_service.habit_status(db, user_id, name)
 
     def start_pomodoro(minutes: float = 25) -> str:
-        """Temporizador Pomodoro (default 25 min)."""
+        """Temporizador Pomodoro (default 25 min) con avisos intermedios."""
         mins = max(1, min(int(minutes or 25), 90))
-        return set_timer(minutes=float(mins), seconds=0, label="Pomodoro")
+        set_timer(minutes=float(mins), seconds=0, label="Pomodoro")
+        # Cues cada 5 minutos (sin duplicar el final).
+        step = 5 if mins >= 10 else max(1, mins // 2)
+        for m in range(step, mins, step):
+            queue_client_action(
+                {
+                    "type": "local_notification",
+                    "seconds": m * 60,
+                    "title": "Pomodoro",
+                    "body": f"Van {m} minutos. Seguís.",
+                }
+            )
+        return f"Pomodoro de {mins} minutos. Te voy avisando en el camino."
 
     def start_breathing(minutes: float = 2) -> str:
-        """Pausa de respiración guiada (default 2 min) + timer."""
+        """Pausa de respiración guiada (default 2 min) + timer + cues."""
         mins = max(1, min(int(minutes or 2), 10))
         set_timer(minutes=float(mins), seconds=0, label="Respiración")
+        total = mins * 60
+        for sec in range(30, total, 30):
+            queue_client_action(
+                {
+                    "type": "local_notification",
+                    "seconds": sec,
+                    "title": "Respiración",
+                    "body": "Inhalá 4, sostené 4, exhalá 6.",
+                }
+            )
         return (
             f"Vamos {mins} minuto{'s' if mins != 1 else ''} de respiración: "
             "inhalá por la nariz contando cuatro, sostené cuatro, exhalá seis. "
-            "Te aviso cuando termine."
+            "Te acompaño con avisos y te aviso cuando termine."
         )
 
     def confirm_pending_action() -> str:
@@ -716,6 +852,41 @@ def build_builtin_tools(
             ),
         ),
         StructuredTool.from_function(
+            func=remind_at,
+            name="remind_at",
+            description=(
+                "Recordatorio con momento en español: when='mañana a las 9', "
+                "'el viernes a las 18', 'en 2 horas'. message=qué recordar."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=remind_habit,
+            name="remind_habit",
+            description="Avisa un hábito (agua, pastilla…). when opcional en español.",
+        ),
+        StructuredTool.from_function(
+            func=quick_reply,
+            name="quick_reply",
+            description=(
+                "Respuesta rápida: decile a X que… channel=telegram|chat|email."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=continue_reading,
+            name="continue_reading",
+            description="Sigue leyendo el texto largo partido en partes.",
+        ),
+        StructuredTool.from_function(
+            func=stop_reading,
+            name="stop_reading",
+            description="Para de leer el texto largo.",
+        ),
+        StructuredTool.from_function(
+            func=set_driver_mode,
+            name="set_driver_mode",
+            description="Activa o apaga modo conductor (respuestas ultra cortas).",
+        ),
+        StructuredTool.from_function(
             func=call_contact,
             name="call_contact",
             description="Busca un contacto por nombre en el teléfono y abre el marcador para llamar.",
@@ -737,7 +908,10 @@ def build_builtin_tools(
         StructuredTool.from_function(
             func=get_inbox_digest,
             name="get_inbox_digest",
-            description="Resumen de qué me escribieron (mails sin leer + Chat). Usar ante 'qué me escribieron'.",
+            description=(
+                "Resumen de qué me escribieron (mails sin leer + Chat + Telegram). "
+                "Usar ante 'qué me escribieron'."
+            ),
         ),
         StructuredTool.from_function(
             func=make_study_summary,

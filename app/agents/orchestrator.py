@@ -63,10 +63,16 @@ SYSTEM_PROMPT_TEMPLATE = (
     "Si piden salí del silencio / desactivá silencio, usá set_quiet_mode(enabled=false). "
     "Eso puede venir sin el nombre de activación. "
 
-    "Si dicen dale/confirmá y hay algo pendiente, usá confirm_pending_action. "
-    "Si cancelan, usá cancel_pending_action. "
-    "Si piden 'qué me escribieron', usá get_inbox_digest. "
+    "Si dicen dale/sí/mandalo/confirmá y hay algo pendiente, usá confirm_pending_action. "
+    "Si cancelan (no/cancelá/dejalo), usá cancel_pending_action. "
+    "Si piden 'qué me escribieron', usá get_inbox_digest (mails, Chat y Telegram). "
     "Si piden 'qué tengo hoy' o buenos días, usá get_today_overview o get_daily_briefing. "
+    "Si piden modo conductor / estoy manejando, usá set_driver_mode. "
+    "Si piden salí del modo conductor, usá set_driver_mode(enabled=false). "
+    "Si piden 'acordate el viernes/mañana a las X', usá remind_at. "
+    "Si piden 'avisame del hábito agua', usá remind_habit. "
+    "Si piden 'decile a X que…' por chat/mail/telegram, usá quick_reply. "
+    "Si están leyendo algo largo y dicen seguí, usá continue_reading; si dicen pará, stop_reading. "
     "Para lista de compras usá add_note/list_notes/check_off_note con list_name=compras. "
     "Si piden leer el correo, mails o bandeja de entrada, usá get_recent_emails "
     "o read_email; si piden mandar un mail, usá send_email "
@@ -112,11 +118,17 @@ def system_prompt_for_persona(
     persona: str,
     display_name: str | None = None,
     extra: str | None = None,
+    driver_mode: bool = False,
 ) -> str:
     name = (display_name or "").strip() or PERSONA_DISPLAY_NAME.get(
         persona, PERSONA_DISPLAY_NAME["elisse"]
     )
     base = SYSTEM_PROMPT_TEMPLATE.format(name=name)
+    if driver_mode:
+        base += (
+            " MODO CONDUCTOR ACTIVO: respondé en 1 o 2 oraciones muy cortas, "
+            "sin listas, sin chamuyo. Priorizá seguridad y claridad."
+        )
     extra_s = (extra or "").strip()
     if extra_s:
         return f"{base}\n\n{extra_s}"
@@ -707,11 +719,13 @@ async def _build_agent(
     )
 
     extra = telegram_service.agent_context(db, user_id)
+    u = db.query(User).filter(User.id == user_id).first()
+    driver = bool(u is not None and getattr(u, "driver_mode", False))
     return create_react_agent(
         model,
         tools,
         prompt=system_prompt_for_persona(
-            persona, display_name=display_name, extra=extra
+            persona, display_name=display_name, extra=extra, driver_mode=driver
         ),
     )
 

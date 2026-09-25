@@ -124,6 +124,18 @@ def stop_meeting_mode(db: Session, user_id: int) -> str:
     return "Listo, salí del modo reunión."
 
 
+def set_driver_mode(db: Session, user_id: int, enabled: bool) -> str:
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        return "No encontré tu usuario."
+    user.driver_mode = bool(enabled)
+    db.add(user)
+    db.commit()
+    if enabled:
+        return "Modo conductor: respuestas bien cortas. Decí salí del modo conductor para volver."
+    return "Listo, salí del modo conductor."
+
+
 def prefs_public(user: User) -> dict:
     return {
         "persona": user.persona,
@@ -133,4 +145,5 @@ def prefs_public(user: User) -> dict:
         "confirm_sends": bool(getattr(user, "confirm_sends", False)),
         "meeting_mode": is_meeting_mode(user),
         "speak_slow": bool(getattr(user, "speak_slow", False)),
+        "driver_mode": bool(getattr(user, "driver_mode", False)),
     }

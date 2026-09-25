@@ -30,6 +30,8 @@ class User(Base):
     meeting_until: Mapped[datetime | None] = Column(DateTime, nullable=True, default=None)
     # TTS un poco más lento.
     speak_slow: Mapped[bool] = Column(Boolean, nullable=False, default=False)
+    # Respuestas ultra cortas (manejar / manos libres).
+    driver_mode: Mapped[bool] = Column(Boolean, nullable=False, default=False)
     # Modo traductor bidireccional: códigos ISO (es, ru, en...). Null = apagado.
     translator_lang_a: Mapped[str | None] = Column(String, nullable=True, default=None)
     translator_lang_b: Mapped[str | None] = Column(String, nullable=True, default=None)

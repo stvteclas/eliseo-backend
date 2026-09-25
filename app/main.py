@@ -84,6 +84,12 @@ def _ensure_prefs_and_notes_columns() -> None:
                         f"ALTER TABLE users ADD COLUMN speak_slow BOOLEAN DEFAULT {bool_false} NOT NULL"
                     )
                 )
+            if "driver_mode" not in columns:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE users ADD COLUMN driver_mode BOOLEAN DEFAULT {bool_false} NOT NULL"
+                    )
+                )
     if "notes" in tables:
         ncols = {col["name"] for col in inspector.get_columns("notes")}
         if "done" not in ncols:

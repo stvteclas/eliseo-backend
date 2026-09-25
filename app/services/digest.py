@@ -48,6 +48,20 @@ def inbox_digest(user_id: int, db: Session) -> str:
             parts.append(tools["list_chat_contacts"].invoke({"limit": 8}))
     except Exception:
         parts.append("No pude armar el resumen de mensajes ahora.")
+
+    try:
+        from app.services import telegram as telegram_service
+
+        if telegram_service.is_connected(db, user_id):
+            chats = telegram_service.list_dialogs(db, user_id, limit=6)
+            parts.append(chats)
+            # Últimos mensajes del primer chat reciente si se puede inferir un nombre
+            # (list_dialogs ya da contexto; no spamear get_messages de todos).
+        else:
+            parts.append("Telegram no está conectado.")
+    except Exception:
+        parts.append("No pude mirar Telegram ahora.")
+
     if not parts:
         return "No hay fuentes de mensajes conectadas."
     return "Lo que te escribieron: " + " ".join(parts)

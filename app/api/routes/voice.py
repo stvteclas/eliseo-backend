@@ -64,6 +64,79 @@ def _is_quiet_exit(transcript: str) -> bool:
     return any(n in t for n in needles)
 
 
+def _is_confirm_phrase(transcript: str) -> bool:
+    t = _fold_es(transcript).strip()
+    if not t:
+        return False
+    exact = {
+        "dale",
+        "si",
+        "sí",
+        "ok",
+        "okay",
+        "listo",
+        "manda",
+        "mandalo",
+        "mandala",
+        "envia",
+        "envialo",
+        "confirma",
+        "confirmalo",
+        "de una",
+        "dale nomas",
+        "dale nomás",
+    }
+    if t in exact or _fold_es(t) in {_fold_es(x) for x in exact}:
+        return True
+    return any(
+        p in t
+        for p in (
+            "dale manda",
+            "si dale",
+            "manda nomas",
+            "confirma y manda",
+        )
+    )
+
+
+def _is_cancel_phrase(transcript: str) -> bool:
+    t = _fold_es(transcript).strip()
+    needles = (
+        "cancel",
+        "no mand",
+        "no envie",
+        "no envies",
+        "dejalo",
+        "dejalo ahi",
+        "olvidalo",
+        "anul",
+    )
+    if t in {"no", "para", "basta", "cancelar", "cancelá", "cancela"}:
+        return True
+    return any(n in t for n in needles)
+
+
+def _is_continue_phrase(transcript: str) -> bool:
+    t = _fold_es(transcript).strip()
+    return t in {
+        "segui",
+        "sigue",
+        "continua",
+        "continuar",
+        "mas",
+        "seguí",
+        "siguiente",
+        "dale segui",
+    } or any(p in t for p in ("segui leyendo", "sigue leyendo", "continua leyendo", "leeme mas"))
+
+
+def _is_stop_read_phrase(transcript: str) -> bool:
+    t = _fold_es(transcript).strip()
+    return t in {"para", "parado", "basta", "cortala", "corta"} or any(
+        p in t for p in ("para de leer", "deja de leer", "no sigas", "corta ahi")
+    )
+
+
 class TranscribeResponse(BaseModel):
     transcript: str
     detected_language: str | None = None
@@ -186,21 +259,50 @@ async def voice_turn(
             if not effective:
                 effective = "Decime"
 
-    try:
-        reply, actions, speak_language = await handle_user_message(
-            effective,
-            current_user.id,
-            db,
-            latitude=latitude,
-            longitude=longitude,
-            source_language=stt.language,
-            history=parse_history_payload(history),
-        )
-    except ToolServerUnavailable:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="El servidor de herramientas (MCP) no está disponible.",
-        )
+    # Atajos sin agente: confirmar / cancelar / seguir leyendo / parar.
+    from app.services import pending_confirm
+    from app.services import reading as reading_service
+
+    shortcut_reply: str | None = None
+    shortcut_actions: list = []
+    if pending_confirm.get_pending_label(current_user.id):
+        if _is_confirm_phrase(effective):
+            shortcut_reply = pending_confirm.confirm_pending(current_user.id)
+        elif _is_cancel_phrase(effective):
+            shortcut_reply = pending_confirm.cancel_pending(current_user.id)
+    if shortcut_reply is None and reading_service.has_session(current_user.id):
+        if _is_continue_phrase(effective):
+            shortcut_reply = reading_service.continue_reading(current_user.id)
+        elif _is_stop_read_phrase(effective):
+            shortcut_reply = reading_service.stop_reading(current_user.id)
+
+    if shortcut_reply is not None:
+        reply, actions, speak_language = shortcut_reply, shortcut_actions, "es"
+    else:
+        try:
+            reply, actions, speak_language = await handle_user_message(
+                effective,
+                current_user.id,
+                db,
+                latitude=latitude,
+                longitude=longitude,
+                source_language=stt.language,
+                history=parse_history_payload(history),
+            )
+        except ToolServerUnavailable:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="El servidor de herramientas (MCP) no está disponible.",
+            )
+        # Lecturas largas: partir y pedir «seguí» (excepto modo conductor).
+        if not bool(getattr(current_user, "driver_mode", False)):
+            reply = reading_service.maybe_start_if_long(current_user.id, reply or "")
+        else:
+            reading_service.clear(current_user.id)
+            text = (reply or "").strip()
+            if len(text) > 220:
+                cut = text[:220].rsplit(" ", 1)[0].rstrip(",.;:")
+                reply = cut + "."
 
     try:
         reply_text = (reply or "").strip()

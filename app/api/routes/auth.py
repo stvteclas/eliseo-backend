@@ -25,6 +25,7 @@ def _user_out(user: User) -> UserOut:
         confirm_sends=prefs["confirm_sends"],
         meeting_mode=prefs["meeting_mode"],
         speak_slow=prefs["speak_slow"],
+        driver_mode=prefs["driver_mode"],
     )
 
 
@@ -91,6 +92,8 @@ def update_me(
         current_user.confirm_sends = data.confirm_sends
     if data.speak_slow is not None:
         current_user.speak_slow = data.speak_slow
+    if data.driver_mode is not None:
+        current_user.driver_mode = data.driver_mode
     db.add(current_user)
     db.commit()
     db.refresh(current_user)
